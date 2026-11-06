@@ -1,0 +1,19 @@
+[workspace]
+resolver = "3"
+members = ["core", "app", "tools/emutest"]
+default-members = ["core", "app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "0BSD"
+rust-version = "1.90"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+opt-level = 3

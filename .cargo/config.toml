@@ -1,0 +1,6 @@
+# Link with Rust's bundled lld. CXX-Qt's build helper (qt-build-utils) picks a linker itself
+# unless RUSTFLAGS already names one, and without a system `lld` on PATH it falls back to
+# ld.gold, which Rust has deprecated and which has linked the Qt initializer archives in the
+# wrong order. Rust 1.90+ ships lld and finds it for -fuse-ld=lld without a system copy.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]

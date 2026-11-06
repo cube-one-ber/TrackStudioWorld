@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  # The library and the test harness: no Qt needed. Tests that need game files skip.
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --all --check
+      - run: cargo clippy -p mkwtrack -p mkw-emutest --all-targets -- -D warnings
+      - run: cargo test -p mkwtrack -p mkw-emutest
+
+  # The app, against current Qt 6 and KDE Frameworks 6.
+  app:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - run: pacman -Syu --noconfirm --needed base-devel git rust qt6-base qt6-declarative qt6-quick3d kirigami qqc2-desktop-style breeze
+      - uses: actions/checkout@v4
+      - run: cargo clippy -p mkw-track-editor --all-targets -- -D warnings
+      - run: cargo test -p mkw-track-editor

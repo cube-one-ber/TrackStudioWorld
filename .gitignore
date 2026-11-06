@@ -1,0 +1,6 @@
+/target/
+# qmlls settings point at a local build folder (see CONTRIBUTING.md)
+.qmlls.ini
+# emulator test output
+/emutest-out/
+*.tmp

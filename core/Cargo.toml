@@ -1,0 +1,22 @@
+[package]
+name = "mkwtrack"
+description = "Mario Kart World course data: BYML, Banc course files, the game catalog, FBX models and editing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+readme = "../README.md"
+keywords = ["mario-kart", "byml", "modding", "nintendo-switch"]
+categories = ["game-development", "parser-implementations"]
+publish = false
+
+[dependencies]
+base64 = "0.22"
+crc32fast = "1.5.4"
+fastrand = "2.5.0"
+flate2 = "1.1.10"
+glam = "0.34.2"
+nalgebra = "0.35.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
+zstd = "0.14.3"
