@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls as QQC2
 import org.kde.kirigami as Kirigami
-import org.mkw.trackeditor
+import TrackStudioWorld
 
 QQC2.ScrollView {
     id: cp

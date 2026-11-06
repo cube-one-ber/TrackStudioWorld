@@ -1,6 +1,6 @@
 # Course files
 
-What MKW Track Editor knows about Mario Kart World's course data, and how each point was
+What TrackStudioWorld knows about Mario Kart World's course data, and how each point was
 checked. "Data" means checked against every shipped file; "code" means read from the game's
 executable (version 1.8.0, see [game-code.md](game-code.md)); "in game" means seen in an
 emulator (see [testing.md](testing.md)).

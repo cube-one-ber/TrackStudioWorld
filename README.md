@@ -1,15 +1,19 @@
-# MKW Track Editor
+# TrackStudioWorld
 
-A course editor for Mario Kart World, in the spirit of Track Studio for Mario Kart 8 Deluxe. It
+A course editor for Mario Kart World, inspired by Track Studio for Mario Kart 8 Deluxe. It
 opens the game's course files, lets you move, add and delete objects and paths in a 3D view,
 and saves your changes as a mod for an emulator or for a Switch 2 with ns2jb-modloader.
 
 It is written in Rust. The interface uses Kirigami (KDE Frameworks 6) and the 3D view uses
 Qt Quick 3D, bridged with CXX-Qt.
 
-> **Unofficial.** This project is not affiliated with or endorsed by Nintendo. It contains no
-> game code or assets: you need your own dump of a game you own, and the console keys from your
-> own console.
+> **Not affiliated.** TrackStudioWorld is an independent project. It is not affiliated with,
+> endorsed by or connected to [Track Studio](https://mapstudioproject.github.io/TrackStudioDocs/)
+> or the Map Studio Project; the name only says what it was inspired by. It is not affiliated
+> with or endorsed by Nintendo either.
+>
+> It contains no game code or assets: you need your own dump of a game you own, and the
+> console keys from your own console.
 
 ## What it edits
 
@@ -57,7 +61,7 @@ sudo pacman -S --needed rust qt6-base qt6-declarative qt6-quick3d kirigami qqc2-
 cargo build --release
 ```
 
-The binary is `target/release/mkw-track-editor`. `.cargo/config.toml` makes the build link
+The binary is `target/release/trackstudioworld`. `.cargo/config.toml` makes the build link
 with Rust's bundled lld; see the comment there for why.
 
 ## Game files
@@ -72,7 +76,7 @@ The editor reads:
 Set both in **File → Settings…**, or start with:
 
 ```sh
-mkw-track-editor --romfs /path/to/romfs --models /path/to/Models
+trackstudioworld --romfs /path/to/romfs --models /path/to/Models
 ```
 
 | Option | Meaning |
@@ -84,9 +88,9 @@ mkw-track-editor --romfs /path/to/romfs --models /path/to/Models
 | `--open FILE` | Open a course at start, e.g. `"Banc/Race_FirstCircuit_A_00[Game03].bcett.byml.zs"` |
 | `--select NAME` | After opening, select the first object of that type, or `PATH#N` for point N of the first path with that name |
 
-Settings are saved in `~/.config/mkw-track-editor/config.json`. The first start reads the
+Settings are saved in `~/.config/trackstudioworld/config.json`. The first start reads the
 game's databases and every course, about 7 s, and caches the result in
-`~/.cache/mkw-track-editor/`.
+`~/.cache/trackstudioworld/`.
 
 ## Using it
 
@@ -134,7 +138,7 @@ The editor writes a LayeredFS mod to `<mods>/<mod name>/romfs/`.
 | Path | What it is |
 |---|---|
 | `core/` (`mkwtrack`) | The library: file formats, the game catalog, editing with undo, saving mods, picking and scene data. No Qt. |
-| `app/` (`mkw-track-editor`) | The desktop app. All logic is Rust; QML lays out the panels and draws what Rust hands it. |
+| `app/` (`trackstudioworld`) | The desktop app. All logic is Rust; QML lays out the panels and draws what Rust hands it. |
 | `tools/emutest/` (`mkw-emutest`) | The in-game test harness. |
 | `docs/` | How the files work, what the game's code says, and how it is all tested. |
 

@@ -4,7 +4,7 @@ import QtQuick
 import QtQuick.Controls as QQC2
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
-import org.mkw.trackeditor
+import TrackStudioWorld
 
 Kirigami.ApplicationWindow {
     id: root
@@ -13,7 +13,7 @@ Kirigami.ApplicationWindow {
     height: 1000
     minimumWidth: 1180
     minimumHeight: 720
-    title: (editor.dirty ? "● " : "") + (editor.courseTitle.length > 0 ? editor.courseTitle + " — " : "") + "MKW Track Editor"
+    title: (editor.dirty ? "● " : "") + (editor.courseTitle.length > 0 ? editor.courseTitle + " — " : "") + "TrackStudioWorld"
     pageStack.globalToolBar.style: Kirigami.ApplicationHeaderStyle.None
 
     property string currentAsset: "CmnObj_ItemBox000_A_00"
@@ -256,7 +256,7 @@ Kirigami.ApplicationWindow {
                 onTriggered: helpDialog.open()
             }
             QQC2.MenuItem {
-                text: "About MKW Track Editor"
+                text: "About TrackStudioWorld"
                 icon.name: "help-about"
                 onTriggered: aboutDialog.open()
             }
@@ -464,8 +464,11 @@ Kirigami.ApplicationWindow {
     }
     Kirigami.PromptDialog {
         id: aboutDialog
-        title: "MKW Track Editor"
-        subtitle: "A course editor for Mario Kart World Banc files, in the spirit of Track Studio for Mario Kart 8 Deluxe.\n\nRust core and CXX-Qt bridge, Kirigami " + "(KDE Frameworks 6) interface, Qt Quick 3D viewport.\n\nFormat findings are checked against the shipped game files; see the README."
+        title: "TrackStudioWorld"
+        subtitle: "A course editor for Mario Kart World, inspired by Track Studio for Mario Kart 8 Deluxe.\n\n"
+            + "TrackStudioWorld is an independent project. It is not affiliated with or endorsed by Track Studio, "
+            + "the Map Studio Project or Nintendo.\n\n"
+            + "Version " + Qt.application.version + ". Released under the BSD Zero Clause License."
         standardButtons: Kirigami.Dialog.Ok
     }
 }

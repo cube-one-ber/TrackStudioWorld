@@ -4,7 +4,7 @@ import QtQuick
 import QtQuick.Controls as QQC2
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
-import org.mkw.trackeditor
+import TrackStudioWorld
 
 // Map-object browser with model thumbnails (Track Studio's Assets dock).
 ColumnLayout {

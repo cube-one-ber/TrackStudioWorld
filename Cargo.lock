@@ -524,20 +524,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mkw-track-editor"
-version = "0.1.0"
-dependencies = [
- "cxx",
- "cxx-qt",
- "cxx-qt-build",
- "cxx-qt-lib",
- "glam 0.34.2",
- "image",
- "mkwtrack",
- "serde_json",
-]
-
-[[package]]
 name = "mkwtrack"
 version = "0.1.0"
 dependencies = [
@@ -878,6 +864,20 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "trackstudioworld"
+version = "0.1.0"
+dependencies = [
+ "cxx",
+ "cxx-qt",
+ "cxx-qt-build",
+ "cxx-qt-lib",
+ "glam 0.34.2",
+ "image",
+ "mkwtrack",
+ "serde_json",
 ]
 
 [[package]]

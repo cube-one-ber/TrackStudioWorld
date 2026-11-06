@@ -6,7 +6,7 @@ import QtQuick.Layouts
 import QtQuick3D
 import QtQuick3D.Helpers
 import org.kde.kirigami as Kirigami
-import org.mkw.trackeditor
+import TrackStudioWorld
 
 FocusScope {
     id: vp

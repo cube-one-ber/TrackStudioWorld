@@ -4,7 +4,7 @@ import QtQuick
 import QtQuick.Controls as QQC2
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
-import org.mkw.trackeditor
+import TrackStudioWorld
 
 // Selection properties: Transform / Edit / Object / Parameters / Links / Path data / Raw.
 QQC2.ScrollView {

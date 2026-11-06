@@ -1,7 +1,7 @@
 use cxx_qt_build::{CxxQtBuilder, QmlModule};
 
 fn main() {
-    CxxQtBuilder::new_qml_module(QmlModule::new("org.mkw.trackeditor").qml_files([
+    CxxQtBuilder::new_qml_module(QmlModule::new("TrackStudioWorld").qml_files([
         "qml/ActorGroup.qml",
         "qml/AssetBrowser.qml",
         "qml/AxisIndicator.qml",

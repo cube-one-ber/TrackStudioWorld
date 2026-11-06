@@ -1,4 +1,4 @@
-//! MKW Track Editor: a Kirigami (Qt 6 / KF6) course editor for Mario Kart World, with
+//! TrackStudioWorld: a Kirigami (Qt 6 / KF6) course editor for Mario Kart World, with
 //! all logic in Rust (CXX-Qt).
 
 mod config;
@@ -7,6 +7,9 @@ mod state;
 mod thumbs;
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QQuickStyle, QString, QUrl};
+
+/// Application name: Qt uses it for its own settings, and KDE reads `<name>rc` for the icon theme.
+const APP_NAME: &str = "trackstudioworld";
 
 /// Dark colour scheme and Breeze icons shipped with the editor (Track Studio look). They are installed as a
 /// default config layer (XDG_CONFIG_DIRS), so a user's own kdeglobals still wins, and
@@ -20,7 +23,7 @@ fn install_color_scheme() {
     // icon theme, which on GTK desktops lacks most of the KDE names the editor uses.
     let ok = std::fs::create_dir_all(&dir).is_ok()
         && std::fs::write(dir.join("kdeglobals"), include_str!("../data/kdeglobals")).is_ok()
-        && std::fs::write(dir.join("mkw-track-editorrc"), "[Icons]\nTheme=breeze-dark\n").is_ok();
+        && std::fs::write(dir.join(format!("{APP_NAME}rc")), "[Icons]\nTheme=breeze-dark\n").is_ok();
     if !ok {
         return;
     }
@@ -37,18 +40,18 @@ fn main() {
     }
     let mut app = QGuiApplication::new();
     if let Some(mut app) = app.as_mut() {
-        app.as_mut().set_application_name(&QString::from("mkw-track-editor"));
-        app.as_mut().set_application_display_name(&QString::from("MKW Track Editor"));
-        app.as_mut().set_organization_domain(&QString::from("mkw.local"));
+        app.as_mut().set_application_name(&QString::from(APP_NAME));
+        app.as_mut().set_application_display_name(&QString::from("TrackStudioWorld"));
+        app.as_mut().set_organization_domain(&QString::from("cube-one-ber.github.io"));
         app.as_mut().set_application_version(&QString::from(env!("CARGO_PKG_VERSION")));
     }
-    QGuiApplication::set_desktop_file_name(&QString::from("org.mkw.trackeditor"));
+    QGuiApplication::set_desktop_file_name(&QString::from("io.github.cube_one_ber.TrackStudioWorld"));
     let mut engine = QQmlApplicationEngine::new();
     if let Some(engine) = engine.as_mut() {
         // MKW_QML_DIR loads Main.qml from disk instead of the built-in copy
         let url = match std::env::var("MKW_QML_DIR").ok().and_then(|d| std::path::Path::new(&d).canonicalize().ok()) {
             Some(dir) => format!("file://{}/Main.qml", dir.display()),
-            None => "qrc:/qt/qml/org/mkw/trackeditor/qml/Main.qml".to_string(),
+            None => "qrc:/qt/qml/TrackStudioWorld/qml/Main.qml".to_string(),
         };
         engine.load(&QUrl::from(url.as_str()));
     }

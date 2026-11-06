@@ -1,6 +1,6 @@
 import QtQuick
 import QtQuick3D.Helpers
-import org.mkw.trackeditor
+import TrackStudioWorld
 
 // Unit primitives built in Rust (box, sphere, cone along +Z, cylinder along Y, torus).
 ProceduralMesh {

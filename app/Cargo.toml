@@ -1,6 +1,6 @@
 [package]
-name = "mkw-track-editor"
-description = "Course editor for Mario Kart World (Rust, Kirigami, Qt Quick 3D)"
+name = "trackstudioworld"
+description = "TrackStudioWorld: a course editor for Mario Kart World (Rust, Kirigami, Qt Quick 3D)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick3D
-import org.mkw.trackeditor
+import TrackStudioWorld
 
 // Move / rotate / scale gizmo drawn in the overlay view; Rust does the drag maths.
 Node {

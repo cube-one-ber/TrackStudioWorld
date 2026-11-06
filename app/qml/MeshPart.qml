@@ -3,7 +3,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick3D
 import QtQuick3D.Helpers
-import org.mkw.trackeditor
+import TrackStudioWorld
 
 // One material part of a model, geometry handed over from Rust.
 Model {

@@ -1,11 +1,11 @@
-//! Paths the editor works with: saved in `~/.config/mkw-track-editor/config.json` and
+//! Paths the editor works with: saved in `~/.config/trackstudioworld/config.json` and
 //! overridable on the command line.
 
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 pub const USAGE: &str = "\
-usage: mkw-track-editor [options]
+usage: trackstudioworld [options]
 
   --romfs DIR       the game's extracted romfs (with Banc/, RSDB/, System/)
   --models DIR      Switch Toolbox FBX exports of the game's models (output/Models)
@@ -87,11 +87,11 @@ fn xdg(var: &str, fallback: &str) -> PathBuf {
 }
 
 pub fn config_file() -> PathBuf {
-    xdg("XDG_CONFIG_HOME", ".config").join("mkw-track-editor/config.json")
+    xdg("XDG_CONFIG_HOME", ".config").join("trackstudioworld/config.json")
 }
 
 pub fn cache_dir() -> PathBuf {
-    xdg("XDG_CACHE_HOME", ".cache").join("mkw-track-editor")
+    xdg("XDG_CACHE_HOME", ".cache").join("trackstudioworld")
 }
 
 /// Eden's (and its forks') mod folder for this game.
@@ -105,7 +105,7 @@ impl Config {
     pub fn load() -> Config {
         let mut c = Self::saved();
         if let Err(e) = c.apply_args(std::env::args().skip(1)) {
-            eprintln!("mkw-track-editor: {e}\n\n{USAGE}");
+            eprintln!("trackstudioworld: {e}\n\n{USAGE}");
             std::process::exit(2);
         }
         c
@@ -147,7 +147,7 @@ impl Config {
                     std::process::exit(0);
                 }
                 "-V" | "--version" => {
-                    println!("mkw-track-editor {}", env!("CARGO_PKG_VERSION"));
+                    println!("trackstudioworld {}", env!("CARGO_PKG_VERSION"));
                     std::process::exit(0);
                 }
                 // Qt's own options (-platform xcb, -reverse...) are read by QGuiApplication

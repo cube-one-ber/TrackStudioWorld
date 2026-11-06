@@ -3,7 +3,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick3D
 import QtQuick3D.Helpers
-import org.mkw.trackeditor
+import TrackStudioWorld
 
 // Paths: lines, direction chevrons, checkpoint gates and point markers, one node per path.
 Node {

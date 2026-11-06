@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick3D
-import org.mkw.trackeditor
+import TrackStudioWorld
 
 // Every object that uses one model, drawn instanced: one geometry per part.
 Node {

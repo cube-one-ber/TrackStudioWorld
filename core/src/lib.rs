@@ -1,5 +1,5 @@
 //! Mario Kart World course data: the file formats, what the game expects of them, and the
-//! editing operations of MKW Track Editor.
+//! editing operations of TrackStudioWorld.
 //!
 //! * [`byml`], [`sarc`], [`restbl`], [`typedjson`], [`io`]: file formats.
 //! * [`banc`]: course files and the summaries the game reads from them.

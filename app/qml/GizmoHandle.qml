@@ -1,6 +1,6 @@
 import QtQuick
 import QtQuick3D
-import org.mkw.trackeditor
+import TrackStudioWorld
 
 // One axis of the gizmo: shaft plus a cone (move) or cube (scale) tip, along local +Y.
 Node {
