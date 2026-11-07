@@ -32,6 +32,9 @@ Model {
     Texture {
         id: tex
         source: mp.d.texture
+        // the model loader stores V with the image's top row at 0 (as the thumbnail renderer
+        // samples it); Qt Quick 3D samples with the bottom row at 0
+        flipV: true
         generateMipmaps: true
         mipFilter: Texture.Linear
     }
