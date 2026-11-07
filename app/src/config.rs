@@ -1,5 +1,5 @@
-//! Paths the editor works with: saved in `~/.config/trackstudioworld/config.json` and
-//! overridable on the command line.
+//! Paths the editor works with: saved in `~/.config/trackstudioworld/config.json`
+//! (`%APPDATA%\trackstudioworld\config.json` on Windows) and overridable on the command line.
 
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -48,14 +48,14 @@ pub struct Config {
 }
 
 fn home() -> PathBuf {
-    std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from)
+    std::env::home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
 /// Text shown in the UI hides the home folder (and so the user name): "/home/<user>/x" -> "~/x".
 pub fn tilde(s: &str) -> String {
     let h = home();
     let h = h.to_string_lossy();
-    let h = h.trim_end_matches('/');
+    let h = h.trim_end_matches(['/', '\\']);
     if h.is_empty() { s.to_string() } else { s.replace(h, "~") }
 }
 
@@ -76,27 +76,47 @@ pub fn expand(s: &str) -> PathBuf {
     }
     let p = match s.strip_prefix('~') {
         Some("") => home(),
-        Some(rest) if rest.starts_with('/') => home().join(rest.trim_start_matches('/')),
+        Some(rest) if rest.starts_with(['/', std::path::MAIN_SEPARATOR]) => {
+            home().join(rest.trim_start_matches(['/', std::path::MAIN_SEPARATOR]))
+        }
         _ => PathBuf::from(s),
     };
     if p.is_absolute() { p } else { std::env::current_dir().unwrap_or_default().join(p) }
 }
 
-fn xdg(var: &str, fallback: &str) -> PathBuf {
+/// A per-user folder from an environment variable, or `fallback` under the home folder.
+fn env_dir(var: &str, fallback: &str) -> PathBuf {
     std::env::var_os(var).filter(|v| !v.is_empty()).map_or_else(|| home().join(fallback), PathBuf::from)
 }
 
+/// Settings and other app data: `~/.config` (XDG), or the roaming `%APPDATA%` on Windows.
+fn config_home() -> PathBuf {
+    if cfg!(windows) { env_dir("APPDATA", "AppData/Roaming") } else { env_dir("XDG_CONFIG_HOME", ".config") }
+}
+
 pub fn config_file() -> PathBuf {
-    xdg("XDG_CONFIG_HOME", ".config").join("trackstudioworld/config.json")
+    config_home().join("trackstudioworld").join("config.json")
 }
 
+/// `~/.cache/trackstudioworld` (XDG), or `%LOCALAPPDATA%\trackstudioworld` on Windows.
 pub fn cache_dir() -> PathBuf {
-    xdg("XDG_CACHE_HOME", ".cache").join("trackstudioworld")
+    let base = if cfg!(windows) { env_dir("LOCALAPPDATA", "AppData/Local") } else { env_dir("XDG_CACHE_HOME", ".cache") };
+    base.join("trackstudioworld")
 }
 
-/// Eden's (and its forks') mod folder for this game.
+/// Eden's (and its forks') mod folder for this game: under `~/.local/share` (XDG), or
+/// `%APPDATA%` on Windows.
 pub fn emulator_load_dir() -> PathBuf {
-    xdg("XDG_DATA_HOME", ".local/share").join(format!("eden/load/{}", mkwtrack::banc::TITLE_ID))
+    let base = if cfg!(windows) { config_home() } else { env_dir("XDG_DATA_HOME", ".local/share") };
+    base.join("eden").join("load").join(mkwtrack::banc::TITLE_ID)
+}
+
+/// A `file:` URL for a local path, as QML image and texture sources take it.
+pub fn file_url(p: &Path) -> String {
+    let s = p.to_string_lossy().replace('\\', "/");
+    // `canonicalize` on Windows gives verbatim paths (`\\?\C:\...`)
+    let s = s.strip_prefix("//?/").unwrap_or(&s);
+    if s.starts_with('/') { format!("file://{s}") } else { format!("file:///{s}") }
 }
 
 impl Config {
@@ -184,6 +204,13 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_urls() {
+        assert_eq!(file_url(Path::new("/a/b c.png")), "file:///a/b c.png");
+        assert_eq!(file_url(Path::new("C:\\Users\\x\\t.png")), "file:///C:/Users/x/t.png");
+        assert_eq!(file_url(Path::new("\\\\?\\C:\\x")), "file:///C:/x");
+    }
 
     #[test]
     fn expands_only_a_leading_tilde() {

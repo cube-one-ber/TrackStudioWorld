@@ -801,7 +801,12 @@ impl State {
             format!("Already in the emulator's mod folder: {}", crate::config::tilde(&mod_dir.display().to_string()))
         } else {
             let (emu, md) = (crate::config::shell_path(&emu), crate::config::shell_path(&mod_dir));
-            format!("mkdir -p \"{emu}\" && cp -r \"{md}\" \"{emu}/\"")
+            if cfg!(windows) {
+                // PowerShell
+                format!("New-Item -ItemType Directory -Force \"{emu}\" | Out-Null; Copy-Item -Recurse -Force \"{md}\" \"{emu}\"")
+            } else {
+                format!("mkdir -p \"{emu}\" && cp -r \"{md}\" \"{emu}/\"")
+            }
         };
         // Switch 2: copy the saved mod into ns2jb-modloader's SD layout too
         let ns2jb = (res.ok && self.cfg.ns2jb_on_save && !self.cfg.ns2jb.as_os_str().is_empty()).then(|| self.export_ns2jb());
@@ -827,7 +832,7 @@ impl State {
 /// file:// URL of the object's cached thumbnail, or "" when it has no model or none is built yet.
 fn thumb_url(info: Option<&ActorInfo>) -> String {
     let Some(p) = info.and_then(|i| i.model.as_ref()).map(|m| crate::thumbs::thumb_path(m)) else { return String::new() };
-    if p.exists() { format!("file://{}", p.display()) } else { String::new() }
+    if p.exists() { crate::config::file_url(&p) } else { String::new() }
 }
 
 pub fn short_name(n: &str) -> String {

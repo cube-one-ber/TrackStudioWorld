@@ -1,0 +1,119 @@
+name: Windows
+
+# A portable ZIP of the editor for 64-bit Windows, built against MSYS2's Qt 6 and KDE
+# Frameworks 6. Every push builds one (kept as a workflow artifact); a push to main also
+# publishes it as a pre-release.
+on:
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # every push to main gets its own pre-release, so only branch builds are cancelled
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: write
+
+jobs:
+  zip:
+    runs-on: windows-latest
+    env:
+      CARGO_HOME: ${{ github.workspace }}\.cargo-home
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: zip
+          pacboy: >-
+            toolchain:p rust:p ntldd:p
+            qt6-base:p qt6-declarative:p qt6-quick3d:p
+            kirigami:p qqc2-desktop-style:p breeze:p breeze-icons:p
+
+      - name: Name the build
+        id: name
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)-dev.${{ github.run_number }}
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "dir=TrackStudioWorld-$version-windows-x64" >> "$GITHUB_OUTPUT"
+          # the cached build holds code generated from the Qt headers
+          echo "toolchain=$(pacman -Q mingw-w64-ucrt-x86_64-{rust,qt6-base,qt6-declarative,qt6-quick3d,kirigami} | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: |
+            .cargo-home/registry
+            target
+          key: windows-${{ steps.name.outputs.toolchain }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: windows-${{ steps.name.outputs.toolchain }}-
+
+      # CXX-Qt runs moc, rcc and the QML tools with an empty environment, so they cannot find
+      # their DLLs on PATH: put the DLLs next to them.
+      - name: Make the Qt build tools self-contained
+        run: |
+          bin=$(cygpath -m /ucrt64/bin)
+          for d in /ucrt64/share/qt6/bin /ucrt64/share/qt6/libexec; do
+            [ -d "$d" ] || continue
+            ntldd -R "$d"/*.exe 2>/dev/null | awk '$2 == "=>" { print $3 }' | tr '\\' '/' | grep -iF "$bin/" | sort -fu \
+              | while read -r dll; do cp -n "$(cygpath -u "$dll")" "$d/"; done
+          done
+      - name: Build
+        run: cargo build --release --locked -p trackstudioworld
+      - name: Package
+        run: |
+          .github/windows/package.sh "dist/${{ steps.name.outputs.dir }}"
+          cd dist && zip -qr9 "${{ steps.name.outputs.dir }}.zip" "${{ steps.name.outputs.dir }}"
+
+      # Start the packaged editor with nothing but Windows on PATH, so a file missing from the
+      # ZIP shows up here, and keep a screenshot of its window.
+      - name: Start the packaged editor
+        shell: pwsh
+        run: |
+          $dir = "dist/${{ steps.name.outputs.dir }}"
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          $env:QT_FORCE_STDERR_LOGGING = "1"
+          $p = Start-Process "$dir/trackstudioworld.exe" -PassThru -RedirectStandardOutput dist/stdout.log -RedirectStandardError dist/stderr.log
+          Start-Sleep -Seconds 30
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $shot = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          [System.Drawing.Graphics]::FromImage($shot).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $shot.Save("$PWD/dist/screenshot.png")
+          $running = -not $p.HasExited
+          if ($running) { Stop-Process -Id $p.Id -Force }
+          Get-Content dist/stdout.log, dist/stderr.log
+          if (-not $running) { throw "The editor quit on start (exit code $($p.ExitCode))" }
+          $errors = Select-String -Path dist/stderr.log -Pattern 'is not installed', 'failed to load component', 'Cannot load library', 'Could not find the Qt platform plugin', 'module .* plugin .* not found', 'Icon theme .* not found'
+          if ($errors) { throw "Missing Qt modules, plugins or icons:`n$($errors -join "`n")" }
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: start-log
+          path: |
+            dist/screenshot.png
+            dist/*.log
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v7
+        with:
+          path: dist/${{ steps.name.outputs.dir }}.zip
+          archive: false
+
+      - name: Publish the pre-release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.name.outputs.version }}
+          ZIP: dist/${{ steps.name.outputs.dir }}.zip
+          SUBJECT: ${{ github.event.head_commit.message }}
+        run: |
+          notes="Portable build of ${GITHUB_SHA:0:7} (${SUBJECT%%$'\n'*}) for 64-bit Windows 10 and 11: unzip it anywhere and run trackstudioworld.exe.
+
+          TrackStudioWorld is not affiliated with Track Studio, the Map Studio Project or Nintendo."
+          gh release create "v$VERSION" "$ZIP" --prerelease --target "$GITHUB_SHA" \
+            --title "TrackStudioWorld $VERSION" --notes "$notes" --generate-notes

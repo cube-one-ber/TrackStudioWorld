@@ -651,7 +651,7 @@ impl qobject::Editor {
             ("normals", vec3_list(&p.normals)),
             ("uvs", QVariant::from(&uvs)),
             ("indexes", QVariant::from(&idx)),
-            ("texture", QVariant::from(&q(tex.map(|t| format!("file://{}", t.display())).unwrap_or_default()))),
+            ("texture", QVariant::from(&q(tex.map(|t| crate::config::file_url(&t)).unwrap_or_default()))),
             ("cutout", QVariant::from(&p.cutout)),
         ])
     }
@@ -1193,7 +1193,7 @@ impl qobject::Editor {
             _ => cache_dir(),
         };
         std::fs::create_dir_all(&dir).ok();
-        let _ = std::process::Command::new("xdg-open").arg(&dir).spawn();
+        let _ = std::process::Command::new(if cfg!(windows) { "explorer" } else { "xdg-open" }).arg(&dir).spawn();
     }
 
     /// Render a thumbnail for every object model into the cache (in the background).
