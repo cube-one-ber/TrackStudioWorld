@@ -4,6 +4,8 @@ A course editor for Mario Kart World, inspired by Track Studio for Mario Kart 8 
 opens the game's course files, lets you move, add and delete objects and paths in a 3D view,
 and saves your changes as a mod for an emulator or for a Switch 2 with ns2jb-modloader.
 
+![TrackStudioWorld editing the start of Mario Bros. Circuit](docs/screenshots/editor.png)
+
 It is written in Rust. The interface uses Kirigami (KDE Frameworks 6) and the 3D view uses
 Qt Quick 3D, bridged with CXX-Qt.
 
@@ -35,6 +37,12 @@ On save the editor rebuilds the counts the game reads to decide which systems a 
 (`CountActor`, `CountRail`, `Collects`), grows `AABB` over moved objects, refuses duplicate
 hashes, writes BYML exactly the way Nintendo's tools do (an unedited course saves
 byte-identical), and raises the resource size table only when a file outgrew its entry.
+
+## Screenshots
+
+| A whole course, with every path drawn over the stage | A lap path point, its checkpoint gate and its parameters | Any course file opens, searchable by file or course name |
+|---|---|---|
+| [![A whole course with its paths](docs/screenshots/overview.png)](docs/screenshots/overview.png) | [![Editing a lap path point and its checkpoint gate](docs/screenshots/paths.png)](docs/screenshots/paths.png) | [![Opening a course](docs/screenshots/open-course.png)](docs/screenshots/open-course.png) |
 
 ## How it was checked
 

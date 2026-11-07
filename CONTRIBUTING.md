@@ -5,8 +5,9 @@ Thanks for helping. A few things keep this project useful and safe to share.
 ## Ground rules
 
 - **No game files in the repository**: no romfs or exefs files, no extracted models or
-  textures, no keys, no screenshots of the game. Tests that need game files read them from
-  paths you give them.
+  textures, no keys. Tests that need game files read them from paths you give them. The
+  editor screenshots in `docs/screenshots/` are the exception; keep personal paths out of
+  them.
 - **Back format claims with evidence.** When code depends on how the game reads a file, say how
   you know: checked against every shipped file, read from the executable (with the address and
   game version), or seen in game. [docs/format.md](docs/format.md) and
