@@ -312,7 +312,7 @@ pub fn links(doc: &Document) -> Lines {
     let mut add = |owner: &Byml| {
         for l in owner.get("Links").and_then(|x| x.as_array()).into_iter().flatten() {
             let src = l.get("Src").and_then(|x| x.as_u64()).unwrap_or(hash_of(owner));
-            let (Some(a), Some(b)) = (pos(src), l.get("Dst").and_then(|x| x.as_u64()).and_then(&pos)) else { continue };
+            let (Some(a), Some(b)) = (pos(src), l.get("Dst").and_then(|x| x.as_u64()).and_then(pos)) else { continue };
             let c = LINK_COLORS.iter().find(|(n, _)| *n == l.str_or("Name", "")).map(|x| x.1).unwrap_or([1.0; 3]);
             // dashed
             let len = a.distance(b);
