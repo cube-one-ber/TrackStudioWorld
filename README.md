@@ -194,3 +194,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) to build, test and change it.
 ## License
 
 [0BSD](LICENSE).
+
+***
+
+AI/SI models are used and encouraged in the development of this project, see [AIPOLICY](AIPOLICY.md).
