@@ -34,7 +34,8 @@ RowLayout {
             leftPadding: 7
             rightPadding: 5
             font.features: { "tnum": 1 }
-            text: vr.values && vr.values[index] !== undefined && vr.values[index] !== null ? Number(vr.values[index]).toFixed(vr.decimals) : ""
+            // "-0.000" reads as a bug: show it as "0.000"
+            text: vr.values && vr.values[index] !== undefined && vr.values[index] !== null ? Number(vr.values[index]).toFixed(vr.decimals).replace(/^-(0\.?0*)$/, "$1") : ""
             validator: DoubleValidator { notation: DoubleValidator.StandardNotation }
             selectByMouse: true
             QQC2.ToolTip.text: ["X", "Y", "Z"][index]
@@ -67,5 +68,11 @@ RowLayout {
                 vr.committed(v);
             }
         }
+    }
+    // two fields: an empty third slot, so the columns line up with the X, Y, Z rows
+    Item {
+        visible: vr.count < 3
+        Layout.fillWidth: true
+        Layout.minimumWidth: Kirigami.Units.gridUnit * 3
     }
 }

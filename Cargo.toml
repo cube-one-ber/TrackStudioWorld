@@ -15,5 +15,10 @@ opt-level = 1
 [profile.dev.package."*"]
 opt-level = 3
 
+# Its BC6H decoder shifts by the endpoint width of reserved block modes, which overflows; release
+# builds wrap. Keep debug builds decoding the same way instead of panicking.
+[profile.dev.package.texture2ddecoder]
+overflow-checks = false
+
 [profile.release]
 opt-level = 3

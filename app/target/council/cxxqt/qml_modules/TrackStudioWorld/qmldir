@@ -1,0 +1,33 @@
+module TrackStudioWorld
+optional plugin TrackStudioWorld
+classname TrackStudioWorld_plugin
+typeinfo plugin.qmltypes
+prefer :/qt/qml/TrackStudioWorld/
+ActorGroup 1.0 qml/ActorGroup.qml
+AssetBrowser 1.0 qml/AssetBrowser.qml
+AxisIndicator 1.0 qml/AxisIndicator.qml
+ChangeObjectDialog 1.0 qml/ChangeObjectDialog.qml
+ConsolePanel 1.0 qml/ConsolePanel.qml
+DialogFooter 1.0 qml/DialogFooter.qml
+Gizmo 1.0 qml/Gizmo.qml
+GizmoHandle 1.0 qml/GizmoHandle.qml
+HelpPanel 1.0 qml/HelpPanel.qml
+LineModel 1.0 qml/LineModel.qml
+Main 1.0 qml/Main.qml
+MeshPart 1.0 qml/MeshPart.qml
+NewPathDialog 1.0 qml/NewPathDialog.qml
+OpenCourseDialog 1.0 qml/OpenCourseDialog.qml
+Outliner 1.0 qml/Outliner.qml
+Panel 1.0 qml/Panel.qml
+ParamRow 1.0 qml/ParamRow.qml
+PlaceAlongDialog 1.0 qml/PlaceAlongDialog.qml
+PrimitiveGeometry 1.0 qml/PrimitiveGeometry.qml
+ProblemsPanel 1.0 qml/ProblemsPanel.qml
+PropertiesPanel 1.0 qml/PropertiesPanel.qml
+RailLayer 1.0 qml/RailLayer.qml
+SaveDialog 1.0 qml/SaveDialog.qml
+Section 1.0 qml/Section.qml
+SettingsDialog 1.0 qml/SettingsDialog.qml
+VecRow 1.0 qml/VecRow.qml
+ViewMenu 1.0 qml/ViewMenu.qml
+Viewport 1.0 qml/Viewport.qml

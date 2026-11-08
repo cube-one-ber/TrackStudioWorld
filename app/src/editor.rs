@@ -38,10 +38,16 @@ pub mod qobject {
         #[qproperty(i32, thumbs_total)]
         #[qproperty(QString, console_text)]
         #[qproperty(QString, romfs_path)]
-        #[qproperty(QString, models_path)]
         #[qproperty(QString, mods_path)]
         #[qproperty(QString, ns2jb_path, cxx_name = "ns2jbPath")]
         #[qproperty(bool, ns2jb_on_save, cxx_name = "ns2jbOnSave")]
+        #[qproperty(QString, undo_label)]
+        #[qproperty(QString, redo_label)]
+        #[qproperty(bool, has_clipboard)]
+        #[qproperty(QString, pick_filter)]
+        #[qproperty(i32, error_count)]
+        #[qproperty(i32, warning_count)]
+        #[qproperty(i32, selection_count)]
         type Editor = super::EditorRust;
 
         #[qsignal]
@@ -98,9 +104,9 @@ pub mod qobject {
         #[qinvokable]
         fn ground_at(self: &Editor, origin: &QVector3D, dir: &QVector3D) -> QString;
         #[qinvokable]
-        fn begin_gizmo(self: Pin<&mut Editor>, axis: i32, origin: &QVector3D, dir: &QVector3D) -> bool;
+        fn begin_gizmo(self: Pin<&mut Editor>, axis: i32, origin: &QVector3D, dir: &QVector3D, aligned: bool) -> bool;
         #[qinvokable]
-        fn drag_gizmo(self: Pin<&mut Editor>, origin: &QVector3D, dir: &QVector3D);
+        fn drag_gizmo(self: Pin<&mut Editor>, origin: &QVector3D, dir: &QVector3D, invert_snap: bool);
         #[qinvokable]
         fn end_gizmo(self: Pin<&mut Editor>);
 
@@ -151,7 +157,7 @@ pub mod qobject {
         #[qinvokable]
         fn insert_point(self: Pin<&mut Editor>);
         #[qinvokable]
-        fn new_rail(self: Pin<&mut Editor>, name: &QString, origin: &QVector3D, dir: &QVector3D, yaw: f64) -> bool;
+        fn new_rail(self: Pin<&mut Editor>, name: &QString, shape: &QString, origin: &QVector3D, dir: &QVector3D, yaw: f64) -> bool;
         #[qinvokable]
         fn reverse_rail(self: Pin<&mut Editor>);
         #[qinvokable]
@@ -174,7 +180,7 @@ pub mod qobject {
         #[qinvokable]
         fn set_gizmo(self: Pin<&mut Editor>, mode: &QString, local: bool);
         #[qinvokable]
-        fn apply_settings(self: Pin<&mut Editor>, romfs: &QString, models: &QString, mods: &QString) -> QString;
+        fn apply_settings(self: Pin<&mut Editor>, romfs: &QString, mods: &QString) -> QString;
         #[qinvokable]
         fn set_export(self: Pin<&mut Editor>, ns2jb: &QString, on_save: bool) -> QString;
         #[qinvokable]
@@ -184,6 +190,63 @@ pub mod qobject {
         fn open_folder(self: &Editor, which: &QString);
         #[qinvokable]
         fn build_thumbnails(self: Pin<&mut Editor>);
+    }
+
+    // editing tools (copy and paste, path drawing, selection, modal transforms, problems)
+    #[auto_cxx_name]
+    extern "RustQt" {
+        #[qinvokable]
+        fn copy_selection(self: Pin<&mut Editor>, cut: bool) -> bool;
+        #[qinvokable]
+        fn paste(self: Pin<&mut Editor>, origin: &QVector3D, dir: &QVector3D, in_place: bool);
+        #[qinvokable]
+        fn add_point_at(self: Pin<&mut Editor>, origin: &QVector3D, dir: &QVector3D) -> bool;
+        #[qinvokable]
+        fn extrude(self: Pin<&mut Editor>) -> bool;
+        #[qinvokable]
+        fn connect_points(self: Pin<&mut Editor>);
+        #[qinvokable]
+        fn path_tool(self: Pin<&mut Editor>, tool: &QString);
+        #[qinvokable]
+        fn change_path_type(self: Pin<&mut Editor>, name: &QString) -> QString;
+        #[qinvokable]
+        fn place_along(self: Pin<&mut Editor>, name: &QString, spacing: f64) -> QString;
+        #[qinvokable]
+        fn set_pick_filter_from_qml(self: Pin<&mut Editor>, name: &QString);
+        #[qinvokable]
+        fn box_select(self: Pin<&mut Editor>, corners: &QString, mode: i32) -> i32;
+        #[qinvokable]
+        fn select_all(self: Pin<&mut Editor>);
+        #[qinvokable]
+        fn select_items(self: Pin<&mut Editor>, json: &QString);
+        #[qinvokable]
+        fn pick_for_menu(self: Pin<&mut Editor>, origin: &QVector3D, dir: &QVector3D) -> bool;
+        #[qinvokable]
+        fn hide_selected(self: Pin<&mut Editor>);
+        #[qinvokable]
+        fn unhide_all(self: Pin<&mut Editor>);
+        #[qinvokable]
+        fn set_snap(self: Pin<&mut Editor>, step: f64, angle: f64);
+        #[qinvokable]
+        fn begin_modal(self: Pin<&mut Editor>, mode: &QString, axis: i32, origin: &QVector3D, dir: &QVector3D) -> bool;
+        #[qinvokable]
+        fn restart_modal(self: Pin<&mut Editor>, axis: i32, origin: &QVector3D, dir: &QVector3D) -> bool;
+        #[qinvokable]
+        fn cancel_gizmo(self: Pin<&mut Editor>);
+        #[qinvokable]
+        fn move_selection_to(self: Pin<&mut Editor>, x: f64, y: f64, z: f64);
+        #[qinvokable]
+        fn problems(self: &Editor) -> QString;
+        #[qinvokable]
+        fn toggle_favorite(self: Pin<&mut Editor>, name: &QString) -> bool;
+        #[qinvokable]
+        fn recent_courses(self: &Editor) -> QString;
+        #[qinvokable]
+        fn pref(self: &Editor, key: &QString) -> QString;
+        #[qinvokable]
+        fn set_pref(self: Pin<&mut Editor>, key: &QString, json: &QString);
+        #[qinvokable]
+        fn run_test(self: Pin<&mut Editor>) -> QString;
     }
 
     impl cxx_qt::Threading for Editor {}
@@ -201,7 +264,8 @@ use mkwtrack::catalog::Catalog;
 use mkwtrack::doc::{Document, LINK_TYPES, Loc};
 use mkwtrack::raycast::Ray;
 use mkwtrack::scene::{self, Lines, Tris};
-use mkwtrack::{byml::Byml, fbx, typedjson};
+use mkwtrack::tools::RailShape;
+use mkwtrack::{bfres, byml::Byml, typedjson};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -229,10 +293,16 @@ pub struct EditorRust {
     thumbs_total: i32,
     console_text: QString,
     romfs_path: QString,
-    models_path: QString,
     mods_path: QString,
     ns2jb_path: QString,
     ns2jb_on_save: bool,
+    undo_label: QString,
+    redo_label: QString,
+    has_clipboard: bool,
+    pick_filter: QString,
+    error_count: i32,
+    warning_count: i32,
+    selection_count: i32,
     st: State,
 }
 
@@ -263,10 +333,16 @@ impl Default for EditorRust {
             thumbs_total: 0,
             console_text: QString::default(),
             romfs_path: q(crate::config::tilde(&cfg.romfs.display().to_string())),
-            models_path: q(crate::config::tilde(&cfg.models.display().to_string())),
             mods_path: q(crate::config::tilde(&cfg.mods.display().to_string())),
             ns2jb_path: q(crate::config::tilde(&cfg.ns2jb.display().to_string())),
             ns2jb_on_save: cfg.ns2jb_on_save,
+            undo_label: QString::default(),
+            redo_label: QString::default(),
+            has_clipboard: false,
+            pick_filter: QString::default(),
+            error_count: 0,
+            warning_count: 0,
+            selection_count: 0,
             st: State::new(cfg),
         }
     }
@@ -369,6 +445,20 @@ impl qobject::Editor {
             let v = *self.overlay_revision() + 1;
             self.as_mut().set_overlay_revision(v);
         }
+        if r.panels {
+            let (mut errors, mut warnings) = (0, 0);
+            if let Some(d) = &self.st().doc {
+                for p in mkwtrack::check::check(&d.root, &d.file, self.st().cat.as_deref()) {
+                    match p.severity {
+                        mkwtrack::check::Severity::Error => errors += 1,
+                        mkwtrack::check::Severity::Warning => warnings += 1,
+                        mkwtrack::check::Severity::Info => {}
+                    }
+                }
+            }
+            self.as_mut().set_error_count(errors);
+            self.as_mut().set_warning_count(warnings);
+        }
         self.as_mut().sync_flags();
     }
 
@@ -384,6 +474,16 @@ impl qobject::Editor {
         self.as_mut().set_can_undo(cu);
         self.as_mut().set_can_redo(cr);
         self.as_mut().set_link_picking(link);
+        let (ul, rl) = match &self.st().doc {
+            Some(d) => (d.undo_label().unwrap_or("").to_string(), d.redo_label().unwrap_or("").to_string()),
+            None => (String::new(), String::new()),
+        };
+        self.as_mut().set_undo_label(q(ul));
+        self.as_mut().set_redo_label(q(rl));
+        let clip = self.st().clipboard.as_ref().is_some_and(|c| !c.is_empty());
+        self.as_mut().set_has_clipboard(clip);
+        let n = self.st().selection.len() as i32;
+        self.as_mut().set_selection_count(n);
         let console = self.st().console.iter().rev().take(200).rev().cloned().collect::<Vec<_>>().join("\n");
         self.as_mut().set_console_text(q(console));
         let last = self.st().console.back().cloned().unwrap_or_default();
@@ -427,7 +527,7 @@ impl qobject::Editor {
                 let _ = qt2.queue(move |ed| ed.set_status(q(m)));
             };
             let t = std::time::Instant::now();
-            let res = Catalog::load(&cfg.romfs, &cfg.models, &cache, &progress);
+            let res = Catalog::load(&cfg.romfs, &cache, &progress);
             let took = t.elapsed();
             let _ = qt.queue(move |mut ed| {
                 ed.as_mut().set_busy(false);
@@ -472,6 +572,8 @@ impl qobject::Editor {
             )
         };
         self.as_mut().set_course_title(q(title));
+        let from = if self.st().doc.as_ref().is_some_and(|d| d.from_mod) { self.st().mod_name.clone() } else { String::new() };
+        self.as_mut().stm().prefs.opened(&file.to_string(), &from);
         let mn = self.st().mod_name.clone();
         self.as_mut().rust_mut().get_mut().mod_name = q(&mn);
         self.as_mut().mod_name_changed();
@@ -501,12 +603,13 @@ impl qobject::Editor {
         true
     }
 
-    /// Parse the course's FBX models on a worker thread: stages first (each shown as it
-    /// arrives, then the ground BVH), then object models.
+    /// Read the course's models from the romfs on a worker thread, decoding their textures into
+    /// the cache: stages first (each shown as it arrives, then the ground BVH), then object
+    /// models.
     fn load_models(mut self: Pin<&mut Self>) {
         let wanted = self.st().wanted_models();
         let cache = self.st().models.clone();
-        let models_dir = self.st().cfg.models.clone();
+        let romfs = self.st().cfg.romfs.clone();
         let stages = self.st().stages.clone();
         let generation = self.st().load_gen;
         self.as_mut().set_models_wanted(wanted.len() as i32);
@@ -526,14 +629,21 @@ impl qobject::Editor {
                             let n = bvh.len();
                             ed.as_mut().stm().ground = Some(bvh);
                             ed.as_mut().set_ground_ready(true);
-                            ed.as_mut().log(format!("Stage surface ready for drop-to-ground ({n} triangles)"));
+                            ed.as_mut().log(format!("Ready to edit (stage surface: {n} triangles)"));
                         }
                     });
                 }
                 if !cache.has(rel) {
-                    let res = std::fs::read(models_dir.join(rel)).map_err(mkwtrack::Error::from).and_then(|d| fbx::load_model(&d));
-                    match res {
+                    match bfres::load(&romfs, rel) {
                         Ok(m) => {
+                            let mut names: Vec<String> = m.parts.iter().filter_map(|p| p.texture.clone()).collect();
+                            names.sort();
+                            names.dedup();
+                            let errors = crate::textures::ensure_all(&romfs, &names);
+                            if !errors.is_empty() {
+                                let msg = format!("Model {rel}: {} texture(s) not decoded, first: {}", errors.len(), errors[0]);
+                                let _ = qt.queue(move |ed| ed.log(msg));
+                            }
                             cache.map.lock().unwrap().insert(rel.clone(), Arc::new(m));
                         }
                         Err(e) => {
@@ -584,9 +694,11 @@ impl qobject::Editor {
     }
 
     fn undo(mut self: Pin<&mut Self>) {
+        self.as_mut().stm().cancel_drag();
         let ok = self.as_mut().stm().doc.as_mut().map(|d| d.undo()).unwrap_or(false);
         if ok {
             let st = self.as_mut().stm();
+            st.handle = None;
             let doc = st.doc.as_ref().unwrap();
             st.selection.retain(|h| doc.index.contains_key(h));
             self.as_mut().log("Undone");
@@ -595,9 +707,11 @@ impl qobject::Editor {
     }
 
     fn redo(mut self: Pin<&mut Self>) {
+        self.as_mut().stm().cancel_drag();
         let ok = self.as_mut().stm().doc.as_mut().map(|d| d.redo()).unwrap_or(false);
         if ok {
             let st = self.as_mut().stm();
+            st.handle = None;
             let doc = st.doc.as_ref().unwrap();
             st.selection.retain(|h| doc.index.contains_key(h));
             self.as_mut().log("Redone");
@@ -637,15 +751,7 @@ impl qobject::Editor {
         for &x in &p.indices {
             idx.append(x as i32);
         }
-        let dir = self.st().cfg.models.join(&rel).parent().map(|d| d.to_path_buf()).unwrap_or_default();
-        let tex = p.texture.as_ref().and_then(|t| {
-            let a = dir.join(t);
-            if a.exists() {
-                return Some(a);
-            }
-            let b = dir.join(format!("{}.png", t.rsplit_once('.').map(|x| x.0).unwrap_or(t)));
-            b.exists().then_some(b)
-        });
+        let tex = p.texture.as_deref().and_then(crate::textures::cached);
         map(vec![
             ("positions", vec3_list(&p.positions)),
             ("normals", vec3_list(&p.normals)),
@@ -653,6 +759,7 @@ impl qobject::Editor {
             ("indexes", QVariant::from(&idx)),
             ("texture", QVariant::from(&q(tex.map(|t| crate::config::file_url(&t)).unwrap_or_default()))),
             ("cutout", QVariant::from(&p.cutout)),
+            ("alphaCutoff", QVariant::from(&p.alpha_cutoff)),
         ])
     }
 
@@ -721,19 +828,24 @@ impl qobject::Editor {
         }
     }
 
-    fn begin_gizmo(mut self: Pin<&mut Self>, axis: i32, origin: &QVector3D, dir: &QVector3D) -> bool {
-        let ok = self.as_mut().stm().begin_drag(axis.clamp(0, 3) as usize, &ray(origin, dir));
+    fn begin_gizmo(mut self: Pin<&mut Self>, axis: i32, origin: &QVector3D, dir: &QVector3D, aligned: bool) -> bool {
+        let ok = self.as_mut().stm().begin_drag(None, axis.clamp(0, 3) as usize, &ray(origin, dir), aligned, true);
         self.sync_flags();
         ok
     }
 
-    fn drag_gizmo(mut self: Pin<&mut Self>, origin: &QVector3D, dir: &QVector3D) {
-        let moved = self.as_mut().stm().drag_to(&ray(origin, dir));
+    fn drag_gizmo(mut self: Pin<&mut Self>, origin: &QVector3D, dir: &QVector3D, invert_snap: bool) {
+        let moved = self.as_mut().stm().drag_to(&ray(origin, dir), invert_snap);
         if moved.is_empty() {
             return;
         }
         let actors = self.st().transforms_json(&moved);
         let rails = self.st().rails_touched(&moved);
+        if self.st().handle.is_some() {
+            // the handle lines and markers are part of the path mesh
+            let v = *self.rails_revision() + 1;
+            self.as_mut().set_rails_revision(v);
+        }
         self.as_mut().transforms_moved(q(actors.to_string()));
         self.as_mut().rails_moved(q(json!(rails).to_string()));
         let v = *self.overlay_revision() + 1;
@@ -789,9 +901,12 @@ impl qobject::Editor {
         self.bump(Refresh::SELECTION);
     }
 
+    /// Esc: a picked curve handle goes back to its point; otherwise nothing stays selected.
     fn clear_selection(mut self: Pin<&mut Self>) {
         let st = self.as_mut().stm();
-        st.selection.clear();
+        if st.handle.take().is_none() {
+            st.selection.clear();
+        }
         st.rebuild();
         self.bump(Refresh::SELECTION);
     }
@@ -826,13 +941,17 @@ impl qobject::Editor {
         self.changed();
     }
 
+    /// Set a parameter on the selection (every selected item with the same parameter table).
     fn set_param(mut self: Pin<&mut Self>, name: &QString, kind: &QString, text: &QString) -> QString {
-        let Some(h) = self.current() else { return q("select one item") };
+        let targets = self.st().param_targets();
+        if targets.is_empty() {
+            return q("select something first");
+        }
         match typedjson::parse_text(&kind.to_string(), &text.to_string()) {
             Ok(v) => {
                 let n = name.to_string();
                 if let Some(d) = self.as_mut().stm().doc.as_mut() {
-                    d.set_dynamic(h, &n, Some(v));
+                    d.set_dynamic_many(&targets, &n, Some(v));
                 }
                 self.changed();
                 QString::default()
@@ -842,10 +961,10 @@ impl qobject::Editor {
     }
 
     fn remove_param(mut self: Pin<&mut Self>, name: &QString) {
-        let Some(h) = self.current() else { return };
+        let targets = self.st().param_targets();
         let n = name.to_string();
         if let Some(d) = self.as_mut().stm().doc.as_mut() {
-            d.set_dynamic(h, &n, None);
+            d.set_dynamic_many(&targets, &n, None);
         }
         self.changed();
     }
@@ -934,7 +1053,7 @@ impl qobject::Editor {
         let n = name.to_string();
         let st = self.as_mut().stm();
         let (Some(cat), true) = (st.cat.clone(), st.doc.is_some()) else { return false };
-        let pos = st.placement(&ray(origin, dir));
+        let pos = st.placement_at(&ray(origin, dir), st.working_height());
         let h = st.doc.as_mut().unwrap().add_actor(&cat, &n, pos, yaw as f32);
         match h {
             Some(h) => {
@@ -1004,16 +1123,22 @@ impl qobject::Editor {
         }
     }
 
-    fn new_rail(mut self: Pin<&mut Self>, name: &QString, origin: &QVector3D, dir: &QVector3D, yaw: f64) -> bool {
+    fn new_rail(mut self: Pin<&mut Self>, name: &QString, shape: &QString, origin: &QVector3D, dir: &QVector3D, yaw: f64) -> bool {
         let n = name.to_string();
+        let shape = RailShape::from_name(&shape.to_string());
         let st = self.as_mut().stm();
         let Some(cat) = st.cat.clone() else { return false };
-        let pos = st.placement(&ray(origin, dir));
+        let pos = st.placement_at(&ray(origin, dir), st.working_height());
         let Some(doc) = st.doc.as_mut() else { return false };
-        match doc.new_rail(&cat, &n, pos, yaw as f32) {
+        match doc.new_rail_shaped(&cat, &n, pos, yaw as f32, shape) {
             Some(last) => {
                 st.selection = vec![last];
-                self.as_mut().log(format!("New {n} with 2 points: select a point and press I to extend it"));
+                let how = match shape {
+                    RailShape::Point => "1 point: Alt+Click where the path goes next (E extends it ahead)",
+                    RailShape::Circle => "a closed loop of 4 points",
+                    _ => "its last point selected: Alt+Click or E to extend it",
+                };
+                self.as_mut().log(format!("New {n}, {how}"));
                 self.changed();
                 true
             }
@@ -1051,7 +1176,8 @@ impl qobject::Editor {
     // ------------------------------------------------------------ panels
 
     fn assets(&self, filter: &QString, category: &QString, placed_only: bool) -> QString {
-        q(self.st().asset_json(&filter.to_string(), &category.to_string(), placed_only).to_string())
+        let s = self.st();
+        q(s.asset_json(&filter.to_string(), &category.to_string(), placed_only, &s.prefs.favorites).to_string())
     }
 
     fn categories(&self) -> QString {
@@ -1121,16 +1247,14 @@ impl qobject::Editor {
         self.as_mut().set_overlay_revision(v);
     }
 
-    fn apply_settings(mut self: Pin<&mut Self>, romfs: &QString, models: &QString, mods: &QString) -> QString {
+    fn apply_settings(mut self: Pin<&mut Self>, romfs: &QString, mods: &QString) -> QString {
         let mut cfg = self.st().cfg.clone();
         cfg.romfs = crate::config::expand(&romfs.to_string());
-        cfg.models = crate::config::expand(&models.to_string());
         cfg.mods = crate::config::expand(&mods.to_string());
         if let Err(e) = cfg.valid().and_then(|_| cfg.save()) {
             return q(crate::config::tilde(&e));
         }
         self.as_mut().set_romfs_path(romfs.clone());
-        self.as_mut().set_models_path(models.clone());
         self.as_mut().set_mods_path(mods.clone());
         let st = self.as_mut().stm();
         st.cfg = cfg;
@@ -1206,10 +1330,10 @@ impl qobject::Editor {
         self.as_mut().set_thumbs_total(jobs.len() as i32);
         self.as_mut().set_thumbs_done(0);
         let qt = self.qt_thread();
-        let models = self.st().cfg.models.clone();
+        let romfs = self.st().cfg.romfs.clone();
         std::thread::spawn(move || {
             let qt2 = qt.clone();
-            thumbs::render_all(&models, jobs, &move |done| {
+            thumbs::render_all(&romfs, jobs, &move |done| {
                 let _ = qt2.queue(move |mut ed| ed.as_mut().set_thumbs_done(done as i32));
             });
             let _ = qt.queue(|mut ed| {
@@ -1217,5 +1341,430 @@ impl qobject::Editor {
                 ed.as_mut().set_revision(v);
             });
         });
+    }
+}
+
+/// Editing tools: copy and paste, drawing and reshaping paths, selection, modal transforms,
+/// problems and preferences.
+impl qobject::Editor {
+    fn copy_selection(mut self: Pin<&mut Self>, cut: bool) -> bool {
+        let st = self.as_mut().stm();
+        let Some(doc) = st.doc.as_ref() else { return false };
+        let clip = doc.copy(&st.selection);
+        if clip.is_empty() {
+            self.log("Select objects, paths or points to copy");
+            return false;
+        }
+        let n = clip.len();
+        st.clipboard = Some(clip);
+        if cut {
+            let sel = std::mem::take(&mut st.selection);
+            if let Some(d) = st.doc.as_mut() {
+                d.delete(&sel);
+                d.relabel_undo("Cut");
+            }
+            self.as_mut().log(format!("Cut {n} item(s)"));
+            self.changed();
+        } else {
+            self.as_mut().log(format!("Copied {n} item(s): Ctrl+V pastes them at the centre of the view, Ctrl+Shift+V where they were"));
+        }
+        true
+    }
+
+    fn paste(mut self: Pin<&mut Self>, origin: &QVector3D, dir: &QVector3D, in_place: bool) {
+        let st = self.as_mut().stm();
+        let Some(clip) = st.clipboard.clone() else { return };
+        let offset = if in_place { Vec3::ZERO } else { st.placement_at(&ray(origin, dir), Some(clip.centre.y)) - clip.centre };
+        let Some(doc) = st.doc.as_mut() else { return };
+        let out = doc.paste(&clip, offset);
+        if !out.is_empty() {
+            st.selection = out;
+            st.handle = None;
+            self.as_mut().log(format!("Pasted {} item(s)", clip.len()));
+            self.changed();
+        }
+    }
+
+    /// Alt+Click with a path point selected: a new point there, joined to it.
+    fn add_point_at(mut self: Pin<&mut Self>, origin: &QVector3D, dir: &QVector3D) -> bool {
+        let st = self.as_mut().stm();
+        let ([from], Some(doc)) = (st.selection.as_slice(), st.doc.as_ref()) else { return false };
+        let from = *from;
+        if !matches!(doc.index.get(&from), Some(Loc::Point(..))) {
+            return false;
+        }
+        let y = doc.transform(from).map(|t| t.0.y);
+        let pos = st.placement_at(&ray(origin, dir), y);
+        let doc = st.doc.as_mut().unwrap();
+        let branch = doc.find(from).is_some_and(|(loc, _)| match loc {
+            Loc::Point(r, i) => {
+                let n = Document::points(&doc.rails()[r]).len();
+                i + 1 < n && i > 0
+            }
+            _ => false,
+        });
+        match doc.add_point_at(from, pos) {
+            Some(n) => {
+                st.selection = vec![n];
+                if branch {
+                    self.as_mut().log("Branched: a new path starts here, linked from the selected point");
+                }
+                self.changed();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// E: a new point one segment on from the selected end point (QML then moves it with the mouse).
+    fn extrude(mut self: Pin<&mut Self>) -> bool {
+        let st = self.as_mut().stm();
+        let [from] = st.selection[..] else {
+            self.log("Select one path point to extrude from");
+            return false;
+        };
+        let Some(doc) = st.doc.as_mut() else { return false };
+        let Some(pos) = doc.extrude_target(from) else {
+            self.log("Select one path point to extrude from");
+            return false;
+        };
+        match doc.add_point_at(from, pos) {
+            Some(n) => {
+                st.selection = vec![n];
+                doc.relabel_undo("Extrude");
+                self.changed();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Connect two selected points with a link, or disconnect them.
+    fn connect_points(mut self: Pin<&mut Self>) {
+        let st = self.as_mut().stm();
+        let [a, b] = st.selection[..] else {
+            self.log("Select two path points (the first one links to the second)");
+            return;
+        };
+        let Some(doc) = st.doc.as_mut() else { return };
+        let msg = match doc.toggle_connection(a, b) {
+            Ok(true) => "Connected: the first point now links to the second".to_string(),
+            Ok(false) => "Disconnected the two points".to_string(),
+            Err(e) => format!("Not connected: {e}"),
+        };
+        self.as_mut().log(msg);
+        self.changed();
+    }
+
+    /// Path tools that work on the selection: split, join, orient, smooth, straighten,
+    /// subdivide, reverse (for every selected path).
+    fn path_tool(mut self: Pin<&mut Self>, tool: &QString) {
+        let tool = tool.to_string();
+        let st = self.as_mut().stm();
+        let sel = st.selection.clone();
+        let ground = st.ground.clone();
+        let Some(doc) = st.doc.as_mut() else { return };
+        let msg = match tool.as_str() {
+            "split" => match sel[..] {
+                [h] => doc.split_rail(h).unwrap_or_else(|e| format!("Not split: {e}")),
+                _ => "Select the point to split the path after".into(),
+            },
+            "join" => match doc.rail_targets(&sel)[..] {
+                [a, b] => {
+                    let (ha, hb) = (hash_of(&doc.rails()[a]), hash_of(&doc.rails()[b]));
+                    match doc.join_rails(ha, hb) {
+                        Ok(m) => {
+                            st.selection = vec![ha.min(hb)].into_iter().filter(|h| doc.index.contains_key(h)).collect();
+                            if st.selection.is_empty() {
+                                st.selection = vec![if doc.index.contains_key(&ha) { ha } else { hb }];
+                            }
+                            m
+                        }
+                        Err(e) => format!("Not joined: {e}"),
+                    }
+                }
+                _ => "Select a point (or the path) of each of two paths to join".into(),
+            },
+            "orient" => {
+                let n = doc.orient_points(&sel, &|p| ground.as_ref().and_then(|g| g.normal_below(p)));
+                format!(
+                    "Turned {n} point(s) to face along their path{}",
+                    if ground.is_some() { ", upright on the stage surface" } else { "" }
+                )
+            }
+            "smooth" => format!("Gave {} point(s) smooth curve handles", doc.smooth_handles(&sel)),
+            "straighten" => format!("Removed the curve handles of {} point(s)", doc.clear_handles(&sel)),
+            "subdivide" => {
+                let new = doc.subdivide(&sel);
+                let n = new.len();
+                if n > 0 && sel.iter().all(|h| matches!(doc.index.get(h), Some(Loc::Point(..)))) {
+                    st.selection.extend(new);
+                }
+                format!("Inserted {n} point(s)")
+            }
+            "reverse" => {
+                let rails: Vec<u64> = doc.rail_targets(&sel).into_iter().map(|r| hash_of(&doc.rails()[r])).collect();
+                for r in &rails {
+                    doc.reverse_rail(*r);
+                }
+                format!(
+                    "Reversed {} path(s). Links into their old first points and out of their old last points were left as they were; check them.",
+                    rails.len()
+                )
+            }
+            "renumber" => {
+                if mkwtrack::checkpoints::misnumbered(doc.rails()).is_empty() {
+                    "The checkpoints already count up along the lap".into()
+                } else {
+                    doc.push_undo_as("Renumber Checkpoints");
+                    format!("Renumbered {} checkpoint(s) so they count up along the lap", doc.renumber_checkpoints())
+                }
+            }
+            "checkpoint-on" | "checkpoint-off" => {
+                let on = tool == "checkpoint-on";
+                let lap: Vec<u64> = doc
+                    .point_targets(&sel)
+                    .into_iter()
+                    .filter(|&(r, _)| doc.rails()[r].str_or("Name", "") == mkwtrack::checkpoints::LAP)
+                    .map(|(r, i)| &Document::points(&doc.rails()[r])[i])
+                    .filter(|p| mkwtrack::checkpoints::is_checkpoint(p) != on)
+                    .map(hash_of)
+                    .collect();
+                if lap.is_empty() {
+                    String::new()
+                } else {
+                    // the number is filled in by the renumbering every edit runs
+                    doc.set_dynamic_many(&lap, mkwtrack::checkpoints::KEY, on.then_some(Byml::F32(0.0)));
+                    doc.relabel_undo(if on { "Make Checkpoint" } else { "Remove Checkpoint" });
+                    format!("{} {} checkpoint(s); the lap's checkpoints were renumbered", if on { "Added" } else { "Removed" }, lap.len())
+                }
+            }
+            "select-path" => {
+                let rails: Vec<u64> = doc.rail_targets(&sel).into_iter().map(|r| hash_of(&doc.rails()[r])).collect();
+                st.selection = rails;
+                st.handle = None;
+                String::new()
+            }
+            "select-points" => {
+                st.selection = doc.point_targets(&sel).into_iter().map(|(r, i)| hash_of(&Document::points(&doc.rails()[r])[i])).collect();
+                st.handle = None;
+                String::new()
+            }
+            other => format!("Unknown path tool {other}"),
+        };
+        if !msg.is_empty() {
+            self.as_mut().log(msg);
+        }
+        self.changed();
+    }
+
+    fn change_path_type(mut self: Pin<&mut Self>, name: &QString) -> QString {
+        let n = name.to_string();
+        let st = self.as_mut().stm();
+        let Some(cat) = st.cat.clone() else { return q("catalog not ready") };
+        let sel = st.selection.clone();
+        let Some(doc) = st.doc.as_mut() else { return q("no course open") };
+        match doc.change_rail_type(&cat, &sel, &n) {
+            Ok(k) => {
+                self.as_mut().log(format!("Changed {k} path(s) to {n}"));
+                self.changed();
+                QString::default()
+            }
+            Err(e) => q(e.to_string()),
+        }
+    }
+
+    fn place_along(mut self: Pin<&mut Self>, name: &QString, spacing: f64) -> QString {
+        let n = name.to_string();
+        let st = self.as_mut().stm();
+        let Some(cat) = st.cat.clone() else { return q("catalog not ready") };
+        let Some(&h) = st.selection.first() else { return q("select a path or one of its points") };
+        let ground = st.ground.clone();
+        let Some(doc) = st.doc.as_mut() else { return q("no course open") };
+        let out = doc.place_along(&cat, h, &n, spacing as f32, &|p| ground.as_ref().and_then(|g| g.ground_below(p)));
+        if out.is_empty() {
+            return q("nothing placed: select a path with at least two points");
+        }
+        let k = out.len();
+        st.selection = out;
+        self.as_mut().log(format!("Placed {k} × {n} along the path, {spacing} m apart"));
+        self.changed();
+        QString::default()
+    }
+
+    fn set_pick_filter_from_qml(mut self: Pin<&mut Self>, name: &QString) {
+        let n = name.to_string();
+        self.as_mut().stm().pick_filter = n.clone();
+        self.as_mut().set_pick_filter(q(&n));
+        let msg = match n.as_str() {
+            "" => "Clicks pick anything".to_string(),
+            "objects" => "Clicks pick objects only".to_string(),
+            "paths" => "Clicks pick path points only".to_string(),
+            t => format!("Clicks pick {t} points only; Alt+Click starts a new {t} or extends the selected one"),
+        };
+        self.log(msg);
+    }
+
+    /// Select inside a box on screen. `corners` is JSON: the rays through its four corners in
+    /// order around it, each `[ox, oy, oz, dx, dy, dz]`.
+    fn box_select(mut self: Pin<&mut Self>, corners: &QString, mode: i32) -> i32 {
+        let v: Vec<[f32; 6]> = serde_json::from_str(&corners.to_string()).unwrap_or_default();
+        let [a, b, c, d] = v[..] else { return 0 };
+        let r = |x: [f32; 6]| Ray { origin: Vec3::new(x[0], x[1], x[2]), dir: Vec3::new(x[3], x[4], x[5]).normalize_or(Vec3::NEG_Z) };
+        let corners = [r(a), r(b), r(c), r(d)];
+        let n = self.as_mut().stm().box_select(&corners, mode);
+        self.as_mut().bump(Refresh::SELECTION);
+        n as i32
+    }
+
+    fn select_all(mut self: Pin<&mut Self>) {
+        self.as_mut().stm().select_all();
+        let n = self.st().selection.len();
+        self.as_mut().log(format!("Selected {n} item(s)"));
+        self.bump(Refresh::SELECTION);
+    }
+
+    fn select_items(mut self: Pin<&mut Self>, json: &QString) {
+        let v: Vec<String> = serde_json::from_str(&json.to_string()).unwrap_or_default();
+        let st = self.as_mut().stm();
+        let Some(doc) = st.doc.as_ref() else { return };
+        st.selection = v.iter().filter_map(|h| h.parse::<u64>().ok()).filter(|h| doc.index.contains_key(h)).collect();
+        st.handle = None;
+        st.reveal_selection();
+        st.rebuild();
+        self.bump(Refresh::SELECTION);
+    }
+
+    /// Right click: select what is under the mouse unless it is already selected.
+    fn pick_for_menu(mut self: Pin<&mut Self>, origin: &QVector3D, dir: &QVector3D) -> bool {
+        let r = ray(origin, dir);
+        let st = self.as_mut().stm();
+        let hit = st.hit_at(&r);
+        if let Some(h) = hit
+            && !st.selection.contains(&h)
+        {
+            st.selection = vec![h];
+            st.handle = None;
+            st.rebuild();
+            self.as_mut().bump(Refresh::SELECTION);
+        }
+        hit.is_some()
+    }
+
+    fn hide_selected(mut self: Pin<&mut Self>) {
+        let n = self.as_mut().stm().hide_selection();
+        self.as_mut().log(format!("Hid {n} item(s) (Alt+H shows everything again)"));
+        self.bump(Refresh::ALL);
+    }
+
+    fn unhide_all(mut self: Pin<&mut Self>) {
+        self.as_mut().stm().unhide_all();
+        self.as_mut().log("Everything is visible again");
+        self.bump(Refresh::ALL);
+    }
+
+    fn set_snap(mut self: Pin<&mut Self>, step: f64, angle: f64) {
+        let st = self.as_mut().stm();
+        st.snap.step = step.max(0.0) as f32;
+        st.snap.angle = angle.max(0.0) as f32;
+        st.prefs.set("snap", json!({"step": step, "angle": angle}));
+        self.bump(Refresh::PANELS);
+    }
+
+    /// G, R or T: move, rotate or scale the selection with the mouse until a click (Esc or a
+    /// right click cancels). `axis` 0-2 locks to X, Y or Z; 3 is free.
+    fn begin_modal(mut self: Pin<&mut Self>, mode: &QString, axis: i32, origin: &QVector3D, dir: &QVector3D) -> bool {
+        let mode = match mode.to_string().as_str() {
+            "rotate" => GizmoMode::Rotate,
+            "scale" => GizmoMode::Scale,
+            _ => GizmoMode::Translate,
+        };
+        let st = self.as_mut().stm();
+        // world axes for modal moves (local ones when the gizmo is local and one item is picked)
+        let ok = st.begin_drag(Some(mode), axis.clamp(0, 3) as usize, &ray(origin, dir), false, true);
+        self.sync_flags();
+        ok
+    }
+
+    fn restart_modal(mut self: Pin<&mut Self>, axis: i32, origin: &QVector3D, dir: &QVector3D) -> bool {
+        let ok = self.as_mut().stm().restart_drag(axis.clamp(0, 3) as usize, &ray(origin, dir));
+        self.as_mut().bump(Refresh::ALL);
+        ok
+    }
+
+    fn cancel_gizmo(mut self: Pin<&mut Self>) {
+        if !self.st().dragging() {
+            return;
+        }
+        self.as_mut().stm().cancel_drag();
+        self.as_mut().log("Cancelled");
+        self.bump(Refresh::ALL);
+    }
+
+    /// Move the whole selection so its centre lands on (x, y, z).
+    fn move_selection_to(mut self: Pin<&mut Self>, x: f64, y: f64, z: f64) {
+        let st = self.as_mut().stm();
+        let sel = st.selection.clone();
+        let Some(doc) = st.doc.as_mut() else { return };
+        let pos: Vec<Vec3> = doc.movable(&sel).into_iter().map(|t| t.1).collect();
+        if pos.is_empty() {
+            return;
+        }
+        let centre = pos.iter().sum::<Vec3>() / pos.len() as f32;
+        doc.move_by(&sel, Vec3::new(x as f32, y as f32, z as f32) - centre);
+        self.changed();
+    }
+
+    fn problems(&self) -> QString {
+        q(self.st().problems_json().to_string())
+    }
+
+    fn toggle_favorite(mut self: Pin<&mut Self>, name: &QString) -> bool {
+        let on = self.as_mut().stm().prefs.toggle_favorite(&name.to_string());
+        let v = *self.revision() + 1;
+        self.as_mut().set_revision(v);
+        on
+    }
+
+    fn recent_courses(&self) -> QString {
+        let s = self.st();
+        q(json!(s
+            .prefs
+            .recent
+            .iter()
+            .filter(|r| s.cfg.romfs.join(&r.file).exists())
+            .map(|r| json!({"file": r.file, "mod": r.mod_name, "name": r.file.trim_start_matches("Banc/").trim_end_matches(".bcett.byml.zs")}))
+            .collect::<Vec<_>>())
+        .to_string())
+    }
+
+    fn pref(&self, key: &QString) -> QString {
+        q(self.st().prefs.values.get(&key.to_string()).map(|v| v.to_string()).unwrap_or_else(|| "null".into()))
+    }
+
+    fn set_pref(mut self: Pin<&mut Self>, key: &QString, json: &QString) {
+        if let Ok(v) = serde_json::from_str(&json.to_string()) {
+            self.as_mut().stm().prefs.set(&key.to_string(), v);
+        }
+    }
+
+    /// Save, then run the test command from Settings (an emulator with the game, say).
+    fn run_test(mut self: Pin<&mut Self>) -> QString {
+        let res = self.as_mut().save();
+        let v: serde_json::Value = serde_json::from_str(&res.to_string()).unwrap_or_default();
+        if v["ok"] != true {
+            return res;
+        }
+        let cmd = self.st().prefs.values.get("testCommand").and_then(|c| c.as_str()).unwrap_or("").trim().to_string();
+        if cmd.is_empty() {
+            self.log("Saved. Set a test command in Settings → Testing to start the game from here (F5)");
+        } else {
+            let (shell, flag) = if cfg!(windows) { ("cmd", "/C") } else { ("sh", "-c") };
+            match std::process::Command::new(shell).arg(flag).arg(&cmd).spawn() {
+                Ok(_) => self.log(format!("Saved, and started: {cmd}")),
+                Err(e) => self.log(format!("Saved, but the test command did not start: {e}")),
+            }
+        }
+        res
     }
 }

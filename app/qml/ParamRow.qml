@@ -22,7 +22,9 @@ RowLayout {
     readonly property bool isBool: kind === "Bool" || kind === "bool"
     readonly property var suggestions: (p.suggest || []).map(String)
     readonly property string defaultText: p.type === "Enum" ? (p.init + (p.initName ? " (" + p.initName + ")" : "")) : JSON.stringify(p.init)
-    readonly property string valueText: p.set ? (Array.isArray(p.value) ? p.value.join(", ") : String(p.value)) : ""
+    // several items with different values: "mixed" until one is typed
+    readonly property bool mixed: p.mixed === true
+    readonly property string valueText: p.set && !mixed ? (Array.isArray(p.value) ? p.value.join(", ") : String(p.value)) : ""
 
     QQC2.Label {
         id: name
@@ -31,6 +33,8 @@ RowLayout {
         Layout.maximumWidth: pr.labelWidth
         elide: Text.ElideRight
         font.weight: pr.p.set ? Font.DemiBold : Font.Normal
+        // Inter's capital I with serifs: "GoalIdx", not "Goalldx"
+        font.features: { "cv08": 1 }
         color: pr.error ? Kirigami.Theme.negativeTextColor
              : pr.p.set ? Kirigami.Theme.textColor
              : Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.75)
@@ -41,8 +45,10 @@ RowLayout {
     }
     QQC2.CheckBox {
         visible: pr.isBool
-        checked: pr.p.set ? pr.p.value === true : pr.p.init === true
-        onToggled: pr.setValue(pr.p.name, pr.kind, checked ? "true" : "false")
+        tristate: pr.mixed
+        checkState: pr.mixed ? Qt.PartiallyChecked : (pr.p.set ? pr.p.value === true : pr.p.init === true) ? Qt.Checked : Qt.Unchecked
+        nextCheckState: () => checkState === Qt.Checked ? Qt.Unchecked : Qt.Checked
+        onToggled: pr.setValue(pr.p.name, pr.kind, checkState === Qt.Checked ? "true" : "false")
     }
     QQC2.ToolButton {
         visible: pr.isBool && pr.p.set === true
@@ -63,7 +69,10 @@ RowLayout {
         visible: !pr.isBool
         Layout.fillWidth: true
         text: pr.valueText
-        placeholderText: pr.defaultText
+        placeholderText: pr.mixed ? "mixed" : pr.defaultText
+        // unset: the default in dim italics, so it does not read as a set value
+        placeholderTextColor: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.42)
+        font.italic: text.length === 0
         selectByMouse: true
         rightPadding: tools.width + Kirigami.Units.smallSpacing
         onEditingFinished: if (text.length > 0 && text !== pr.valueText) pr.setValue(pr.p.name, pr.kind, text)

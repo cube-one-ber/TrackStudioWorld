@@ -18,6 +18,9 @@ Kirigami.ApplicationWindow {
 
     property string currentAsset: "CmnObj_ItemBox000_A_00"
     property string cursorText: ""
+    property var recent: []
+    // set once the user chose to quit without saving
+    property bool quitting: false
 
     Editor {
         id: editor
@@ -25,15 +28,44 @@ Kirigami.ApplicationWindow {
         onReadyChanged: {
             if (!ready)
                 return;
+            root.recent = JSON.parse(recentCourses());
+            helpPanel.collapsed = JSON.parse(pref("helpCollapsed")) !== false;
+            // asset previews are cached: this only renders the ones still missing, in the background
+            buildThumbnails();
             const first = startupCourse();
             if (first.length > 0)
                 openCourse(first, "");
             else
                 openDialog.open();
         }
+        onCourseTitleChanged: root.recent = JSON.parse(recentCourses())
+    }
+
+    // Run `then` now, or after asking what to do with unsaved changes.
+    function confirmDiscard(then) {
+        if (!editor.dirty) {
+            then();
+            return;
+        }
+        unsavedDialog.then = then;
+        unsavedDialog.open();
+    }
+    onClosing: (close) => {
+        if (editor.dirty && !root.quitting) {
+            close.accepted = false;
+            confirmDiscard(() => {
+                root.quitting = true;
+                root.close();
+            });
+        }
     }
 
     // ------------------------------------------------------------ actions
+    // what is selected, as the Properties panel shows it
+    readonly property var sel: props.s
+    readonly property bool hasCourse: editor.courseTitle.length > 0
+    readonly property bool hasSel: ["actor", "point", "rail", "multi"].includes(sel.kind)
+    readonly property bool pathSel: sel.kind === "point" || sel.kind === "rail" || (sel.kind === "multi" && (sel.rails || 0) > 0)
 
     Kirigami.Action {
         id: openAction
@@ -48,36 +80,78 @@ Kirigami.ApplicationWindow {
         text: "Save Mod"
         icon.name: "document-save"
         shortcut: "Ctrl+S"
-        enabled: editor.courseTitle.length > 0
+        enabled: root.hasCourse
         onTriggered: {
             saveDialog.saveResult = JSON.parse(editor.save());
             saveDialog.open();
         }
     }
     Kirigami.Action {
+        id: testAction
+        text: "Save and Test"
+        icon.name: "media-playback-start"
+        shortcut: "F5"
+        enabled: root.hasCourse
+        onTriggered: {
+            const r = JSON.parse(editor.runTest());
+            if (r.ok !== true) {
+                saveDialog.saveResult = r;
+                saveDialog.open();
+            }
+        }
+    }
+    Kirigami.Action {
         id: undoAction
-        text: "Undo"
+        text: "Undo" + (editor.undoLabel.length > 0 ? " " + editor.undoLabel : "")
         icon.name: "edit-undo"
-        shortcut: StandardKey.Undo
+        shortcut: "Ctrl+Z"
         enabled: editor.canUndo
         onTriggered: editor.undo()
     }
     Kirigami.Action {
         id: redoAction
-        text: "Redo"
+        text: "Redo" + (editor.redoLabel.length > 0 ? " " + editor.redoLabel : "")
         icon.name: "edit-redo"
         shortcut: "Ctrl+Shift+Z"
         enabled: editor.canRedo
         onTriggered: editor.redo()
     }
-    // what is selected, as the Properties panel shows it
-    readonly property var sel: props.s
-    readonly property bool hasSel: ["actor", "point", "rail", "multi"].includes(sel.kind)
-
+    Kirigami.Action {
+        id: cutAction
+        text: "Cut"
+        icon.name: "edit-cut"
+        shortcut: "Ctrl+X"
+        enabled: root.hasSel
+        onTriggered: editor.copySelection(true)
+    }
+    Kirigami.Action {
+        id: copyAction
+        text: "Copy"
+        icon.name: "edit-copy"
+        shortcut: "Ctrl+C"
+        enabled: root.hasSel
+        onTriggered: editor.copySelection(false)
+    }
+    Kirigami.Action {
+        id: pasteAction
+        text: "Paste"
+        icon.name: "edit-paste"
+        shortcut: "Ctrl+V"
+        enabled: root.hasCourse && editor.hasClipboard
+        onTriggered: viewport.pasteAtCenter(false)
+    }
+    Kirigami.Action {
+        id: pasteInPlaceAction
+        text: "Paste in Place"
+        icon.name: "edit-paste-in-place"
+        shortcut: "Ctrl+Shift+V"
+        enabled: root.hasCourse && editor.hasClipboard
+        onTriggered: viewport.pasteAtCenter(true)
+    }
     Kirigami.Action {
         id: duplicateAction
         text: "Duplicate"
-        icon.name: "edit-copy"
+        icon.name: "edit-duplicate"
         shortcut: "Ctrl+D"
         enabled: root.hasSel
         onTriggered: viewport.duplicate()
@@ -94,7 +168,7 @@ Kirigami.ApplicationWindow {
         id: dropAction
         text: "Drop to Ground"
         icon.name: "go-bottom"
-        shortcut: "G"
+        shortcut: "End"
         enabled: editor.groundReady && root.hasSel
         onTriggered: editor.dropToGround()
     }
@@ -103,15 +177,64 @@ Kirigami.ApplicationWindow {
         text: "Add " + viewport.shortName(root.currentAsset)
         icon.name: "list-add"
         shortcut: "Q"
-        enabled: editor.courseTitle.length > 0
+        enabled: root.hasCourse
         onTriggered: viewport.addAtCenter(root.currentAsset)
+    }
+    Kirigami.Action {
+        id: changeAction
+        text: "Change Object…"
+        icon.name: "exchange-positions"
+        enabled: root.sel.kind === "actor" || root.sel.kind === "multi" && (root.sel.objects || 0) > 0
+        onTriggered: changeDialog.open()
+    }
+    Kirigami.Action {
+        id: selectAllAction
+        text: "Select All"
+        icon.name: "edit-select-all"
+        shortcut: "Ctrl+A"
+        enabled: root.hasCourse
+        onTriggered: editor.selectAll()
+    }
+    Kirigami.Action {
+        id: selectNoneAction
+        text: "Select None"
+        icon.name: "edit-select-none"
+        enabled: root.hasSel
+        onTriggered: editor.clearSelection()
+    }
+    Kirigami.Action {
+        id: hideAction
+        text: "Hide"
+        icon.name: "view-hidden"
+        shortcut: "H"
+        enabled: root.hasSel
+        onTriggered: editor.hideSelected()
+    }
+    Kirigami.Action {
+        id: unhideAction
+        text: "Show All"
+        icon.name: "view-visible"
+        shortcut: "Alt+H"
+        enabled: root.hasCourse && (viewport.viewInfo.hidden || 0) > 0
+        onTriggered: editor.unhideAll()
     }
     Kirigami.Action {
         id: newPathAction
         text: "New Path…"
         icon.name: "draw-polyline"
-        enabled: editor.courseTitle.length > 0
-        onTriggered: newPathDialog.open()
+        enabled: root.hasCourse
+        onTriggered: {
+            newPathDialog.mode = "new";
+            newPathDialog.open();
+        }
+    }
+    Kirigami.Action {
+        id: extrudeAction
+        text: "Extrude Point"
+        icon.name: "node-add"
+        shortcut: "E"
+        enabled: root.sel.kind === "point"
+        onTriggered: viewport.extrude()
     }
     Kirigami.Action {
         id: insertPointAction
@@ -122,11 +245,104 @@ Kirigami.ApplicationWindow {
         onTriggered: editor.insertPoint()
     }
     Kirigami.Action {
+        id: connectAction
+        text: "Connect / Disconnect Points"
+        icon.name: "node-join"
+        shortcut: "C"
+        enabled: root.sel.kind === "multi" && root.sel.points === 2 && root.sel.count === 2
+        onTriggered: editor.connectPoints()
+    }
+    Kirigami.Action {
+        id: splitAction
+        text: "Split Path Here"
+        icon.name: "node-segment-split"
+        enabled: root.sel.kind === "point" && (root.sel.closed === true || root.sel.index + 1 < root.sel.count)
+        onTriggered: editor.pathTool("split")
+    }
+    Kirigami.Action {
+        id: joinAction
+        text: "Join Paths"
+        icon.name: "node-join-segment"
+        shortcut: "Ctrl+J"
+        enabled: root.sel.kind === "multi" && root.sel.rails === 2
+        onTriggered: editor.pathTool("join")
+    }
+    Kirigami.Action {
+        id: orientAction
+        text: "Orient Points Along Path"
+        icon.name: "transform-rotate"
+        shortcut: "O"
+        enabled: root.pathSel
+        onTriggered: editor.pathTool("orient")
+    }
+    Kirigami.Action {
+        id: smoothAction
+        text: "Smooth Curve"
+        icon.name: "draw-bezier-curves"
+        enabled: root.pathSel
+        onTriggered: editor.pathTool("smooth")
+    }
+    Kirigami.Action {
+        id: straightenAction
+        text: "Straighten (Remove Handles)"
+        icon.name: "draw-line"
+        enabled: root.pathSel
+        onTriggered: editor.pathTool("straighten")
+    }
+    Kirigami.Action {
+        id: subdivideAction
+        text: "Subdivide"
+        icon.name: "node-add"
+        enabled: root.pathSel
+        onTriggered: editor.pathTool("subdivide")
+    }
+    Kirigami.Action {
         id: curveAction
         text: root.sel.control0 ? "Remove Curve Handles" : "Add Curve Handles"
         icon.name: "draw-bezier-curves"
         enabled: root.sel.kind === "point"
         onTriggered: editor.toggleCurve()
+    }
+    Kirigami.Action {
+        id: reverseAction
+        text: "Reverse Path"
+        icon.name: "media-playlist-repeat"
+        enabled: root.pathSel
+        onTriggered: editor.pathTool("reverse")
+    }
+    Kirigami.Action {
+        id: selectPathAction
+        text: "Select Whole Path"
+        icon.name: "draw-polyline"
+        enabled: root.sel.kind === "point" || root.sel.kind === "multi" && (root.sel.points || 0) > 0
+        onTriggered: editor.pathTool("select-path")
+    }
+    Kirigami.Action {
+        id: selectPointsAction
+        text: "Select Its Points"
+        icon.name: "edit-select-all"
+        enabled: root.pathSel
+        onTriggered: editor.pathTool("select-points")
+    }
+    Kirigami.Action {
+        id: changePathTypeAction
+        text: "Change Path Type…"
+        icon.name: "exchange-positions"
+        enabled: root.pathSel
+        onTriggered: {
+            newPathDialog.mode = "change";
+            newPathDialog.open();
+        }
+    }
+    Kirigami.Action {
+        id: placeAlongAction
+        text: "Place Objects Along Path…"
+        icon.name: "distribute-horizontal"
+        enabled: root.sel.kind === "point" || root.sel.kind === "rail"
+        onTriggered: {
+            placeDialog.asset = root.currentAsset;
+            placeDialog.open();
+        }
     }
     Kirigami.Action {
         id: linkAction
@@ -135,13 +351,6 @@ Kirigami.ApplicationWindow {
         shortcut: "L"
         enabled: root.sel.kind === "actor" || root.sel.kind === "point"
         onTriggered: editor.startLink("BasicSignal")
-    }
-    Kirigami.Action {
-        id: reverseAction
-        text: "Reverse Path"
-        icon.name: "media-playlist-repeat"
-        enabled: root.sel.kind === "point" || root.sel.kind === "rail"
-        onTriggered: editor.reverseRail()
     }
     Kirigami.Action {
         id: focusAction
@@ -156,8 +365,18 @@ Kirigami.ApplicationWindow {
         text: "Frame Course"
         icon.name: "zoom-fit-best"
         shortcut: "Home"
-        enabled: editor.courseTitle.length > 0
+        enabled: root.hasCourse
         onTriggered: viewport.frameAll()
+    }
+    Kirigami.Action {
+        id: topViewAction
+        text: "Top View"
+        icon.name: "view-split-top-bottom"
+        shortcut: "Ctrl+T"
+        checkable: true
+        checked: viewport.topView
+        enabled: root.hasCourse
+        onTriggered: viewport.setTopView(!viewport.topView)
     }
     Kirigami.Action {
         id: settingsAction
@@ -177,7 +396,23 @@ Kirigami.ApplicationWindow {
         QQC2.Menu {
             title: "&File"
             QQC2.MenuItem { action: openAction }
+            QQC2.Menu {
+                id: recentMenu
+                title: "Open Recent"
+                enabled: root.recent.length > 0
+                Instantiator {
+                    model: root.recent
+                    delegate: QQC2.MenuItem {
+                        required property var modelData
+                        text: modelData.name + (modelData.mod.length > 0 ? "  [" + modelData.mod + "]" : "")
+                        onTriggered: root.confirmDiscard(() => editor.openCourse(modelData.file, modelData.mod))
+                    }
+                    onObjectAdded: (i, o) => recentMenu.insertItem(i, o)
+                    onObjectRemoved: (i, o) => recentMenu.removeItem(o)
+                }
+            }
             QQC2.MenuItem { action: saveAction }
+            QQC2.MenuItem { action: testAction }
             QQC2.MenuSeparator {}
             QQC2.MenuItem {
                 text: "Open Mod Folder"
@@ -192,7 +427,7 @@ Kirigami.ApplicationWindow {
             QQC2.MenuItem {
                 text: "Export for Switch 2 (ns2jb-modloader)"
                 icon.name: "media-flash-sd-mmc"
-                enabled: editor.courseTitle.length > 0 && editor.ns2jbPath.length > 0
+                enabled: root.hasCourse && editor.ns2jbPath.length > 0
                 onTriggered: {
                     const r = JSON.parse(editor.exportNs2jb());
                     exportDialog.title = r.ok ? "Exported for ns2jb-modloader" : "Export failed";
@@ -207,7 +442,7 @@ Kirigami.ApplicationWindow {
             QQC2.MenuItem {
                 text: "Quit"
                 icon.name: "application-exit"
-                onTriggered: Qt.quit()
+                onTriggered: root.close()
             }
         }
         QQC2.Menu {
@@ -215,33 +450,56 @@ Kirigami.ApplicationWindow {
             QQC2.MenuItem { action: undoAction }
             QQC2.MenuItem { action: redoAction }
             QQC2.MenuSeparator {}
-            QQC2.MenuItem { action: addAction }
+            QQC2.MenuItem { action: cutAction }
+            QQC2.MenuItem { action: copyAction }
+            QQC2.MenuItem { action: pasteAction }
+            QQC2.MenuItem { action: pasteInPlaceAction }
             QQC2.MenuItem { action: duplicateAction }
             QQC2.MenuItem { action: deleteAction }
-            QQC2.MenuItem { action: dropAction }
             QQC2.MenuSeparator {}
-            QQC2.MenuItem {
-                text: "Select None"
-                icon.name: "edit-select-none"
-                enabled: root.hasSel
-                onTriggered: editor.clearSelection()
-            }
+            QQC2.MenuItem { action: addAction }
+            QQC2.MenuItem { action: changeAction }
+            QQC2.MenuItem { action: dropAction }
+            QQC2.MenuItem { action: linkAction }
+            QQC2.MenuSeparator {}
+            QQC2.MenuItem { action: selectAllAction }
+            QQC2.MenuItem { action: selectNoneAction }
+            QQC2.MenuItem { action: hideAction }
+            QQC2.MenuItem { action: unhideAction }
         }
         QQC2.Menu {
             title: "&Paths"
             QQC2.MenuItem { action: newPathAction }
             QQC2.MenuSeparator {}
+            QQC2.MenuItem { action: extrudeAction }
             QQC2.MenuItem { action: insertPointAction }
+            QQC2.MenuItem { action: subdivideAction }
+            QQC2.MenuItem { action: connectAction }
+            QQC2.MenuItem { action: splitAction }
+            QQC2.MenuItem { action: joinAction }
+            QQC2.MenuSeparator {}
+            QQC2.MenuItem { action: orientAction }
             QQC2.MenuItem { action: curveAction }
+            QQC2.MenuItem { action: smoothAction }
+            QQC2.MenuItem { action: straightenAction }
             QQC2.MenuItem { action: reverseAction }
             QQC2.MenuSeparator {}
-            QQC2.MenuItem { action: linkAction }
+            QQC2.MenuItem { action: selectPathAction }
+            QQC2.MenuItem { action: selectPointsAction }
+            QQC2.MenuItem { action: changePathTypeAction }
+            QQC2.MenuItem { action: placeAlongAction }
         }
         QQC2.Menu {
             title: "&View"
             QQC2.MenuItem { action: focusAction }
             QQC2.MenuItem { action: frameAction }
+            QQC2.MenuItem { action: topViewAction }
             QQC2.MenuSeparator {}
+            QQC2.MenuItem {
+                text: "Problems"
+                icon.name: "data-warning"
+                onTriggered: bottomPanel.currentTab = 1
+            }
             QQC2.MenuItem {
                 text: "Build Asset Thumbnails"
                 icon.name: "view-preview"
@@ -262,6 +520,15 @@ Kirigami.ApplicationWindow {
             }
         }
     }
+
+    // the actions the viewport's context menu and the Properties panel offer
+    readonly property var actionMap: ({
+        focus: focusAction, cut: cutAction, copy: copyAction, duplicate: duplicateAction, del: deleteAction, drop: dropAction,
+        hide: hideAction, unhide: unhideAction, change: changeAction, link: linkAction, extrude: extrudeAction, insert: insertPointAction,
+        connect: connectAction, split: splitAction, join: joinAction, orient: orientAction, smooth: smoothAction, straighten: straightenAction,
+        subdivide: subdivideAction, reverse: reverseAction, selectPath: selectPathAction, placeAlong: placeAlongAction,
+        changePathType: changePathTypeAction, selectAll: selectAllAction
+    })
 
     // ------------------------------------------------------------ layout
 
@@ -286,12 +553,27 @@ Kirigami.ApplicationWindow {
                         anchors.fill: parent
                         editor: editor
                         onOpenRequested: openDialog.open()
+                        onFocusRequested: viewport.focusSelection()
                     }
                 }
                 Panel {
+                    id: helpPanel
                     title: "Help"
                     iconName: "help-contents"
-                    QQC2.SplitView.preferredHeight: Kirigami.Units.gridUnit * 14.5
+                    // folded by default, so the outliner gets the height; Help > Controls has the same
+                    collapsible: true
+                    collapsed: true
+                    property real openHeight: Kirigami.Units.gridUnit * 14.5
+                    QQC2.SplitView.preferredHeight: headerHeight
+                    QQC2.SplitView.minimumHeight: headerHeight
+                    QQC2.SplitView.maximumHeight: collapsed ? headerHeight : Number.POSITIVE_INFINITY
+                    onCollapsedChanged: {
+                        if (collapsed)
+                            openHeight = Math.max(height, Kirigami.Units.gridUnit * 8);
+                        QQC2.SplitView.preferredHeight = collapsed ? headerHeight : openHeight;
+                        if (editor.ready)
+                            editor.setPref("helpCollapsed", JSON.stringify(collapsed));
+                    }
                     HelpPanel {
                         anchors.fill: parent
                     }
@@ -311,14 +593,17 @@ Kirigami.ApplicationWindow {
                         anchors.fill: parent
                         editor: editor
                         currentAsset: root.currentAsset
+                        selection: root.sel
+                        actions: root.actionMap
                         onCursorChanged: (text) => root.cursorText = text
-                        onRequestNewPath: newPathDialog.open()
+                        onRequestNewPath: newPathAction.trigger()
+                        onOpenRequested: openDialog.open()
                     }
                 }
                 Panel {
                     id: bottomPanel
                     QQC2.SplitView.preferredHeight: Kirigami.Units.gridUnit * 14
-                    tabs: ["Assets", "Console"]
+                    tabs: ["Assets", "Problems" + (editor.errorCount + editor.warningCount > 0 ? " (" + (editor.errorCount + editor.warningCount) + ")" : ""), "Console"]
                     iconName: "folder-images"
                     StackLayout {
                         anchors.fill: parent
@@ -332,6 +617,10 @@ Kirigami.ApplicationWindow {
                                 viewport.addAtCenter(name);
                             }
                             onChangeRequested: (name) => editor.changeObject(name)
+                        }
+                        ProblemsPanel {
+                            editor: editor
+                            onFocusRequested: viewport.focusSelection()
                         }
                         ConsolePanel {
                             editor: editor
@@ -349,6 +638,7 @@ Kirigami.ApplicationWindow {
                     id: props
                     anchors.fill: parent
                     editor: editor
+                    actions: root.actionMap
                     onFocusRequested: viewport.focusSelection()
                     onChangeObjectRequested: changeDialog.open()
                     onDuplicateRequested: viewport.duplicate()
@@ -389,8 +679,25 @@ Kirigami.ApplicationWindow {
                 text: "models " + editor.modelsLoaded + "/" + editor.modelsWanted
                 color: Kirigami.Theme.disabledTextColor
             }
+            // problems: a click shows the list
+            QQC2.ToolButton {
+                visible: root.hasCourse
+                icon.name: editor.errorCount > 0 ? "data-error" : editor.warningCount > 0 ? "data-warning" : "checkmark"
+                text: editor.errorCount + editor.warningCount > 0 ? (editor.errorCount > 0 ? editor.errorCount + " error(s) " : "") + (editor.warningCount > 0 ? editor.warningCount + " warning(s)" : "") : "No problems"
+                display: QQC2.AbstractButton.TextBesideIcon
+                onClicked: bottomPanel.currentTab = 1
+                QQC2.ToolTip.text: "Course checks (Problems tab)"
+                QQC2.ToolTip.visible: hovered
+                QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+            }
+            QQC2.ToolSeparator { visible: root.hasCourse }
+            QQC2.Label {
+                visible: editor.selectionCount > 0
+                text: editor.selectionCount + " selected"
+                color: Kirigami.Theme.disabledTextColor
+            }
+            QQC2.ToolSeparator { visible: editor.selectionCount > 0 }
             // ground position under the mouse
-            QQC2.ToolSeparator {}
             QQC2.Label {
                 text: "Cursor"
                 color: Kirigami.Theme.disabledTextColor
@@ -431,6 +738,7 @@ Kirigami.ApplicationWindow {
     OpenCourseDialog {
         id: openDialog
         editor: editor
+        guard: root.confirmDiscard
     }
     SaveDialog {
         id: saveDialog
@@ -443,10 +751,15 @@ Kirigami.ApplicationWindow {
     NewPathDialog {
         id: newPathDialog
         editor: editor
-        onChosen: (name) => viewport.newPath(name)
+        onChosen: (name, shape) => viewport.newPath(name, shape)
     }
     ChangeObjectDialog {
         id: changeDialog
+        editor: editor
+        target: root.sel.kind === "actor" ? root.sel.name : root.sel.kind === "multi" ? (root.sel.objects || 0) + " objects" : ""
+    }
+    PlaceAlongDialog {
+        id: placeDialog
         editor: editor
     }
     Kirigami.Dialog {
@@ -455,8 +768,46 @@ Kirigami.ApplicationWindow {
         preferredWidth: Kirigami.Units.gridUnit * 30
         padding: Kirigami.Units.largeSpacing
         HelpPanel {
-            implicitHeight: Kirigami.Units.gridUnit * 24
+            implicitHeight: Kirigami.Units.gridUnit * 30
         }
+    }
+    Kirigami.PromptDialog {
+        id: unsavedDialog
+        property var then: null
+        title: "Unsaved changes"
+        subtitle: "The course has changes that are not saved to the mod \"" + editor.modName + "\"."
+        standardButtons: Kirigami.Dialog.NoButton
+        customFooterActions: [
+            Kirigami.Action {
+                text: "Save"
+                icon.name: "document-save"
+                onTriggered: {
+                    unsavedDialog.close();
+                    const r = JSON.parse(editor.save());
+                    if (r.ok === true) {
+                        if (unsavedDialog.then)
+                            unsavedDialog.then();
+                    } else {
+                        saveDialog.saveResult = r;
+                        saveDialog.open();
+                    }
+                }
+            },
+            Kirigami.Action {
+                text: "Discard"
+                icon.name: "edit-delete"
+                onTriggered: {
+                    unsavedDialog.close();
+                    if (unsavedDialog.then)
+                        unsavedDialog.then();
+                }
+            },
+            Kirigami.Action {
+                text: "Cancel"
+                icon.name: "dialog-cancel"
+                onTriggered: unsavedDialog.close()
+            }
+        ]
     }
     Kirigami.PromptDialog {
         id: exportDialog

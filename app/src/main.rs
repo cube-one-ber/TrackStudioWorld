@@ -6,7 +6,9 @@
 
 mod config;
 mod editor;
+mod prefs;
 mod state;
+mod textures;
 mod thumbs;
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QQuickStyle, QString, QUrl};

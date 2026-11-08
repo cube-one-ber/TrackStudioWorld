@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// Bump when `CatalogData` or how it is built changes, so old caches are rebuilt.
-const CACHE_VERSION: u32 = 3;
+const CACHE_VERSION: u32 = 4;
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub struct ActorInfo {
@@ -27,7 +27,7 @@ pub struct ActorInfo {
     pub label: String,
     pub category: String,
     pub banc_param: String,
-    /// model path under the models folder, when that model was exported
+    /// the model's path in the romfs (`Model/<name>.bfres.zs`), when that file exists
     pub model: Option<String>,
     pub aabb: Option<[[f32; 3]; 2]>,
     /// `BancTransOffset`: shipped placements already include it (see `Document::add_actor`)
@@ -104,7 +104,6 @@ pub struct CatalogData {
 pub struct Catalog {
     pub data: CatalogData,
     pub romfs: PathBuf,
-    pub models: PathBuf,
 }
 
 /// `Work/Gyml/ActorGParam/CmnObj_Coin000_A_00.gear__ActorGParam.gyml` -> `CmnObj_Coin000_A_00`
@@ -171,27 +170,27 @@ impl Catalog {
     }
 
     /// Read the catalog from the cache in `cache_dir`, or build it (about 7 s) and cache it.
-    pub fn load(romfs: &Path, models: &Path, cache_dir: &Path, progress: &dyn Fn(&str)) -> Result<Catalog> {
+    pub fn load(romfs: &Path, cache_dir: &Path, progress: &dyn Fn(&str)) -> Result<Catalog> {
         std::fs::create_dir_all(cache_dir).path_context(cache_dir)?;
         let cache = cache_dir.join("catalog.json");
-        let stamp = stamp(romfs, models);
+        let stamp = stamp(romfs);
         let cached = std::fs::read_to_string(&cache).ok().and_then(|t| serde_json::from_str::<CatalogData>(&t).ok());
         let data = match cached.filter(|d| d.stamp == stamp) {
             Some(d) => d,
             None => {
-                let mut data = build(romfs, models, progress)?;
+                let mut data = build(romfs, progress)?;
                 data.stamp = stamp;
                 crate::io::write_atomic(&cache, &serde_json::to_vec(&data)?)?;
                 data
             }
         };
-        Ok(Catalog { data, romfs: romfs.into(), models: models.into() })
+        Ok(Catalog { data, romfs: romfs.into() })
     }
 }
 
-/// What the cache depends on: the cache format, the models folder and the source files' times.
-fn stamp(romfs: &Path, models: &Path) -> Vec<String> {
-    let mut out = vec![CACHE_VERSION.to_string(), models.display().to_string()];
+/// What the cache depends on: the cache format and the source files' times.
+fn stamp(romfs: &Path) -> Vec<String> {
+    let mut out = vec![CACHE_VERSION.to_string()];
     let mut files = vec![romfs.join("RSDB"), romfs.join("Banc/World_Game03/WorldResident.bcett.byml.zs")];
     if let Ok(rd) = std::fs::read_dir(romfs.join("System/GymlArchive")) {
         let mut v: Vec<_> = rd.flatten().map(|e| e.path()).collect();
@@ -284,17 +283,10 @@ fn rsdb(romfs: &Path, name: &str) -> Vec<Byml> {
         .unwrap_or_default()
 }
 
-/// `Work/Model/CmnObj/CmnObj_ItemBox000/output/CmnObj_ItemBox000_A.fmdb`
-/// -> `CmnObj/CmnObj_ItemBox000.CmnObj_ItemBox000_A/CmnObj_ItemBox000_A.fbx`, if that was exported.
-pub fn model_rel(models: &Path, fmdb: &str) -> Option<String> {
-    let parts: Vec<&str> = fmdb.split('/').collect();
-    if parts.len() < 5 || parts[0] != "Work" || parts[1] != "Model" {
-        return None;
-    }
-    let last = parts.last()?;
-    let model = last.rsplit_once('.').map_or(*last, |x| x.0);
-    let rel = format!("{}/{}.{}/{}.fbx", parts[2], parts[3], model, model);
-    models.join(&rel).exists().then_some(rel)
+/// The romfs path of the model an `Fmdb` names (see [`crate::bfres::model_rel`]), if the file
+/// exists.
+pub fn model_rel(romfs: &Path, fmdb: &str) -> Option<String> {
+    crate::bfres::model_rel(fmdb).filter(|rel| romfs.join(rel).is_file())
 }
 
 fn plain(v: Option<&Byml>) -> Value {
@@ -332,11 +324,11 @@ pub fn parse_all(romfs: &Path, rels: &[String]) -> Vec<(String, Option<Byml>)> {
     })
 }
 
-fn build(romfs: &Path, models: &Path, progress: &dyn Fn(&str)) -> Result<CatalogData> {
+fn build(romfs: &Path, progress: &dyn Fn(&str)) -> Result<CatalogData> {
     progress("Reading GymlArchive…");
     let gyml = GymlArchive::open(romfs)?;
     progress("Resolving actor models…");
-    let mut actors = read_actors(romfs, &gyml, models);
+    let mut actors = read_actors(romfs, &gyml);
     progress("Reading parameter tables…");
     let params = read_params(romfs);
     let rails = read_rails(romfs);
@@ -361,7 +353,7 @@ fn build(romfs: &Path, models: &Path, progress: &dyn Fn(&str)) -> Result<Catalog
 }
 
 /// Every object type: RSDB `Actor` rows plus any ActorGParam file without a row.
-fn read_actors(romfs: &Path, gyml: &GymlArchive, models: &Path) -> BTreeMap<String, ActorInfo> {
+fn read_actors(romfs: &Path, gyml: &GymlArchive) -> BTreeMap<String, ActorInfo> {
     let mut actors: BTreeMap<String, ActorInfo> = BTreeMap::new();
     for row in rsdb(romfs, "Actor") {
         let r = row.str_or("__RowId", "").to_string();
@@ -390,7 +382,7 @@ fn read_actors(romfs: &Path, gyml: &GymlArchive, models: &Path) -> BTreeMap<Stri
         if let Some(mi) = gyml.get(&path("ModelInfoPath", "ModelInfoRef")) {
             let res: Vec<&Byml> = mi.array("ModelResource").iter().filter(|x| x.as_map().is_some()).collect();
             let main = res.iter().find(|r| r.get("ResourceType").is_none()).or(res.first());
-            a.model = main.and_then(|m| m.get("Fmdb")).and_then(|f| f.as_str()).and_then(|f| model_rel(models, f));
+            a.model = main.and_then(|m| m.get("Fmdb")).and_then(|f| f.as_str()).and_then(|f| model_rel(romfs, f));
         }
         if let (Some(mn), Some(mx)) = (vec3_xyz(info.get("ModelAABBMin")), vec3_xyz(info.get("ModelAABBMax"))) {
             a.aabb = Some([mn, mx]);

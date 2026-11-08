@@ -3,9 +3,10 @@
 use crate::banc::hash_of;
 use crate::byml::{Byml, vec3};
 use crate::catalog::{Catalog, StagePlacement};
+use crate::checkpoints;
 use crate::doc::{Document, Loc};
-use crate::fbx::Model;
 use crate::math::{quat_zyx, world_aabb};
+use crate::model::Model;
 use crate::raycast::{Bvh, Ray, ray_obb, ray_sphere};
 use glam::{Mat4, Quat, Vec3};
 use std::collections::{BTreeMap, HashSet};
@@ -65,6 +66,10 @@ pub struct ViewOptions {
     pub hidden_categories: HashSet<String>,
     pub hidden_actor_names: HashSet<String>,
     pub hidden_rails: HashSet<u64>,
+    /// single objects hidden with Hide (H)
+    pub hidden_items: HashSet<u64>,
+    /// the Bézier handle being edited: (point, 0 for `Control0` or 1 for `Control1`)
+    pub active_handle: Option<(u64, usize)>,
 }
 
 #[derive(Clone, Debug)]
@@ -171,6 +176,8 @@ pub struct Scene {
     pub proxies: Vec<Proxy>,
     pub rails: Vec<RailMesh>,
     pub points: Vec<(u64, u64, Vec3, f32)>,
+    /// Bézier handles of the selected points, for picking: (point, which, position)
+    pub handles: Vec<(u64, usize, Vec3)>,
 }
 
 pub fn actor_world(a: &Byml) -> (Vec3, Quat, Vec3) {
@@ -205,7 +212,10 @@ pub fn build(doc: &Document, cat: &Catalog, opts: &ViewOptions, model_ready: &dy
         let h = hash_of(a);
         let info = cat.actor(a.str_or("Gyaml", ""));
         let category = info.map(|i| i.category.as_str()).unwrap_or("Other");
-        if opts.hidden_categories.contains(category) || opts.hidden_actor_names.contains(a.str_or("Name", "")) {
+        if opts.hidden_categories.contains(category)
+            || opts.hidden_actor_names.contains(a.str_or("Name", ""))
+            || opts.hidden_items.contains(&h)
+        {
             continue;
         }
         let (pos, rot, scale) = actor_world(a);
@@ -223,6 +233,7 @@ pub fn build(doc: &Document, cat: &Catalog, opts: &ViewOptions, model_ready: &dy
     }
     let mut rails = vec![];
     let mut points = vec![];
+    let mut handles = vec![];
     for r in doc.rails() {
         let name = r.str_or("Name", "").to_string();
         let rh = hash_of(r);
@@ -274,9 +285,21 @@ pub fn build(doc: &Document, cat: &Catalog, opts: &ViewOptions, model_ready: &dy
                 // RectOffset.y is the gate's top edge (shipped gates bottom out 5-10 m below the point)
                 let c = [[ox - w / 2.0, oy - hgt], [ox + w / 2.0, oy - hgt], [ox + w / 2.0, oy], [ox - w / 2.0, oy]]
                     .map(|[x, y]| p[i] + rot * Vec3::new(x, y, 0.0));
-                let rc = if name == "LapPathGraph" { col } else { col.map(|x| x * 0.7) };
+                // on lap paths, checkpoint gates stand out with a cross and the start, lap check
+                // and goal gates are white; the other lap gates (and other path types) are dimmer
+                let lap = name == checkpoints::LAP;
+                let (rc, cross) = match (lap, checkpoints::is_marker(pt), checkpoints::is_checkpoint(pt)) {
+                    (true, true, _) => ([1.0; 3], true),
+                    (true, false, true) => (col, true),
+                    (true, false, false) => (col.map(|x| x * 0.45), false),
+                    (false, ..) => (col.map(|x| x * 0.7), false),
+                };
                 for k in 0..4 {
                     lines.seg(c[k], c[(k + 1) % 4], rc);
+                }
+                if cross {
+                    lines.seg(c[0], c[2], rc);
+                    lines.seg(c[1], c[3], rc);
                 }
             }
             let sel = selection.contains(&ph) || selection.contains(&rh);
@@ -284,18 +307,21 @@ pub fn build(doc: &Document, cat: &Catalog, opts: &ViewOptions, model_ready: &dy
             markers.marker(p[i], radius, if sel { SELECT } else { col });
             points.push((ph, rh, p[i], radius.max(0.9)));
             if selection.contains(&ph) {
-                for k in ["Control0", "Control1"] {
+                for (which, k) in ["Control0", "Control1"].into_iter().enumerate() {
                     if let Some(c) = pt.get(k) {
                         let c = Vec3::from(vec3(Some(c), [0.0; 3]));
-                        lines.seg(p[i], c, [1.0, 1.0, 1.0]);
-                        markers.marker(c, 0.35, [1.0, 1.0, 1.0]);
+                        let active = opts.active_handle == Some((ph, which));
+                        let hc = if active { SELECT } else { [1.0, 1.0, 1.0] };
+                        lines.seg(p[i], c, hc);
+                        markers.marker(c, if active { 0.5 } else { 0.35 }, hc);
+                        handles.push((ph, which, c));
                     }
                 }
             }
         }
         rails.push(RailMesh { hash: rh, name, lines, markers });
     }
-    Scene { groups, boxes, proxies, rails, points }
+    Scene { groups, boxes, proxies, rails, points, handles }
 }
 
 /// Links between objects and points, drawn as lines with an arrowhead near the target.
@@ -352,8 +378,13 @@ pub fn selection_outline(doc: &Document, cat: &Catalog, selection: &HashSet<u64>
 
 /// Pick the nearest point or object along a ray (points win ties within 1 m).
 pub fn pick(scene: &Scene, r: &Ray) -> Option<u64> {
+    pick_where(scene, r, &|_| true)
+}
+
+/// [`pick`] among the points and objects `keep` accepts.
+pub fn pick_where(scene: &Scene, r: &Ray, keep: &dyn Fn(u64) -> bool) -> Option<u64> {
     let mut best_pt: Option<(f32, u64)> = None;
-    for &(h, _, c, rad) in &scene.points {
+    for &(h, _, c, rad) in scene.points.iter().filter(|p| keep(p.0)) {
         let grow = (c.distance(r.origin) * 0.004).max(rad);
         if let Some(t) = ray_sphere(r, c, grow)
             && best_pt.is_none_or(|b| t < b.0)
@@ -362,7 +393,7 @@ pub fn pick(scene: &Scene, r: &Ray) -> Option<u64> {
         }
     }
     let mut best_actor: Option<(f32, u64)> = None;
-    for p in &scene.proxies {
+    for p in scene.proxies.iter().filter(|p| keep(p.hash)) {
         if let Some(t) = ray_obb(r, p.world, p.min, p.max)
             && best_actor.is_none_or(|b| t < b.0)
         {
@@ -377,14 +408,38 @@ pub fn pick(scene: &Scene, r: &Ray) -> Option<u64> {
     }
 }
 
+/// Pick a Bézier handle of a selected point along a ray: (point, which, distance).
+pub fn pick_handle(scene: &Scene, r: &Ray) -> Option<(u64, usize, f32)> {
+    let mut best: Option<(u64, usize, f32)> = None;
+    for &(h, which, c) in &scene.handles {
+        let grow = (c.distance(r.origin) * 0.006).max(0.5);
+        if let Some(t) = ray_sphere(r, c, grow)
+            && best.is_none_or(|b| t < b.2)
+        {
+            best = Some((h, which, t));
+        }
+    }
+    best
+}
+
+/// Everything a box on screen covers: visible points and objects whose centre is inside.
+/// `keep` filters by hash (the pick filter).
+pub fn in_frustum(scene: &Scene, f: &crate::raycast::Frustum, keep: &dyn Fn(u64) -> bool) -> Vec<u64> {
+    let mut out: Vec<u64> = scene.points.iter().filter(|p| keep(p.0) && f.contains(p.2)).map(|p| p.0).collect();
+    out.extend(
+        scene.proxies.iter().filter(|p| keep(p.hash) && f.contains(p.world.transform_point3((p.min + p.max) / 2.0))).map(|p| p.hash),
+    );
+    out
+}
+
 /// Rail hash for a point hash.
 pub fn rail_of(scene: &Scene, point: u64) -> Option<u64> {
     scene.points.iter().find(|p| p.0 == point).map(|p| p.1)
 }
 
 /// Ground surface for drop-to-ground and placement: every triangle of the given stage models,
-/// placed where the game puts them. `model` returns a parsed model by its path under the
-/// models folder (stages whose model is missing are skipped).
+/// placed where the game puts them. `model` returns a parsed model by its path in the romfs
+/// (stages whose model is missing are skipped).
 pub fn stage_bvh(stages: &[StagePlacement], model: impl Fn(&str) -> Option<Arc<Model>>) -> Bvh {
     let mut tris = vec![];
     for s in stages {

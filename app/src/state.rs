@@ -6,23 +6,26 @@ use glam::{Mat4, Quat, Vec3};
 use mkwtrack::banc::{course_base, hash_of};
 use mkwtrack::byml::{Byml, vec3};
 use mkwtrack::catalog::{ActorInfo, Catalog, Param, StagePlacement, banc_files};
+use mkwtrack::check;
 use mkwtrack::doc::{Document, Loc};
 use mkwtrack::math::quat_zyx;
-use mkwtrack::raycast::{Bvh, Ray, ray_line_param, ray_plane};
+use mkwtrack::model::Model;
+use mkwtrack::raycast::{Bvh, Frustum, Ray, ray_line_param, ray_plane};
 use mkwtrack::scene::{self, Scene, ViewOptions, stages_for};
+use mkwtrack::tools::Clipboard;
+use mkwtrack::typedjson;
 use mkwtrack::workspace::Workspace;
-use mkwtrack::{fbx, typedjson};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
 pub struct ModelCache {
-    pub map: Mutex<HashMap<String, Arc<fbx::Model>>>,
+    pub map: Mutex<HashMap<String, Arc<Model>>>,
 }
 
 impl ModelCache {
-    pub fn get(&self, rel: &str) -> Option<Arc<fbx::Model>> {
+    pub fn get(&self, rel: &str) -> Option<Arc<Model>> {
         self.map.lock().unwrap().get(rel).cloned()
     }
     pub fn has(&self, rel: &str) -> bool {
@@ -44,7 +47,26 @@ pub struct Drag {
     dir: Vec3,
     start: Vec3,
     start_param: f32,
+    /// (hash, position, rotation, scale) of each item when the drag began
     items: Vec<(u64, Vec3, Quat, Vec3)>,
+    /// each point item's Bézier handles when the drag began (they turn and scale with it)
+    controls: Vec<(Option<Vec3>, Option<Vec3>)>,
+    /// dragging one Bézier handle: (which, keep the other one on the same line)
+    handle: Option<(usize, bool)>,
+    moved: bool,
+    /// whether the course had unsaved changes before (a drag that changes nothing keeps that)
+    was_dirty: bool,
+}
+
+/// The move, rotation and scale steps the gizmo snaps to (0 = free).
+#[derive(Clone, Copy)]
+pub struct Snap {
+    pub step: f32,
+    pub angle: f32,
+}
+
+fn snap_to(v: f32, step: f32) -> f32 {
+    if step > 0.0 { (v / step).round() * step } else { v }
 }
 
 pub struct State {
@@ -69,6 +91,13 @@ pub struct State {
     pub gizmo_mode: GizmoMode,
     pub gizmo_local: bool,
     pub load_gen: u64,
+    pub clipboard: Option<Clipboard>,
+    /// what clicks and box selection pick: "" everything, "objects", "paths", or one path type
+    pub pick_filter: String,
+    /// the Bézier handle being edited (its point is the selection)
+    pub handle: Option<(u64, usize)>,
+    pub snap: Snap,
+    pub prefs: crate::prefs::Prefs,
 }
 
 /// Console lines kept.
@@ -115,6 +144,11 @@ impl State {
             gizmo_mode: GizmoMode::Translate,
             gizmo_local: true,
             load_gen: 0,
+            clipboard: None,
+            pick_filter: String::new(),
+            handle: None,
+            snap: Snap { step: 0.0, angle: 0.0 },
+            prefs: crate::prefs::Prefs::load(),
         }
     }
 
@@ -177,6 +211,9 @@ impl State {
         self.expanded.clear();
         self.drag = None;
         self.link_pick = None;
+        self.handle = None;
+        self.view.hidden_items.clear();
+        self.view.hidden_rails.clear();
         self.ground = None;
         self.load_gen += 1;
         if let Some(m) = m.filter(|m| !m.is_empty()) {
@@ -216,6 +253,10 @@ impl State {
             return;
         };
         let sel: HashSet<u64> = self.selection.iter().copied().collect();
+        if self.handle.is_some_and(|(h, _)| self.selection != [h]) {
+            self.handle = None;
+        }
+        self.view.active_handle = self.handle;
         let models = self.models.clone();
         self.scene = Some(scene::build(doc, cat, &self.view, &|m| models.has(m), &sel));
     }
@@ -298,8 +339,13 @@ impl State {
 
     pub fn gizmo_json(&self) -> Value {
         let Some(doc) = &self.doc else { return json!({"visible": false}) };
-        let items: Vec<(Vec3, Quat)> = self.selection.iter().filter_map(|h| doc.transform(*h).map(|(p, q, _)| (p, q))).collect();
-        // count: how much is selected, gizmo or not (a whole path has no gizmo)
+        if let Some((h, which)) = self.handle
+            && let Some(c) = self.handle_pos(h, which)
+        {
+            return json!({"visible": true, "p": v3(c), "q": q4(Quat::IDENTITY), "count": 1, "handle": true});
+        }
+        let items: Vec<(Vec3, Quat)> = doc.movable(&self.selection).into_iter().map(|(_, p, q, _)| (p, q)).collect();
+        // count: how much is selected
         let count = self.selection.len();
         if items.is_empty() {
             return json!({"visible": false, "count": count});
@@ -334,8 +380,42 @@ impl State {
 
     // ------------------------------------------------------------ picking and gizmo
 
+    /// Whether the pick filter lets clicks and box selection pick this item.
+    pub fn pickable(&self, h: u64) -> bool {
+        let f = self.pick_filter.as_str();
+        if f.is_empty() {
+            return true;
+        }
+        let Some(doc) = &self.doc else { return false };
+        match doc.find(h) {
+            Some((Loc::Actor(_), _)) => f == "objects",
+            Some((Loc::Point(r, _), _)) | Some((Loc::Rail(r), _)) => f == "paths" || doc.rails()[r].str_or("Name", "") == f,
+            None => false,
+        }
+    }
+
+    fn handle_pos(&self, h: u64, which: usize) -> Option<Vec3> {
+        let (_, e) = self.doc.as_ref()?.find(h)?;
+        e.get(["Control0", "Control1"][which]).map(|c| Vec3::from(vec3(Some(c), [0.0; 3])))
+    }
+
     pub fn pick(&mut self, r: &Ray, additive: bool) -> Option<u64> {
-        let hit = self.scene.as_ref().and_then(|sc| scene::pick(sc, r));
+        // a Bézier handle of the selected point, when it is in front of everything else
+        if !additive
+            && self.link_pick.is_none()
+            && let Some((h, which, t)) = self.scene.as_ref().and_then(|sc| scene::pick_handle(sc, r))
+        {
+            let other = self.scene.as_ref().and_then(|sc| scene::pick_where(sc, r, &|x| x != h && self.pickable(x)));
+            let nearer = other.and_then(|o| self.doc.as_ref()?.transform(o)).is_none_or(|(p, ..)| p.distance(r.origin) + 1.0 > t);
+            if nearer {
+                self.selection = vec![h];
+                self.handle = Some((h, which));
+                self.rebuild();
+                return Some(h);
+            }
+        }
+        self.handle = None;
+        let hit = self.scene.as_ref().and_then(|sc| scene::pick_where(sc, r, &|x| self.pickable(x)));
         if let Some(src) = self.link_pick.take() {
             match hit {
                 Some(dst) if dst != src => {
@@ -367,77 +447,227 @@ impl State {
         hit
     }
 
+    /// What is under the mouse, without selecting it.
+    pub fn hit_at(&self, r: &Ray) -> Option<u64> {
+        self.scene.as_ref().and_then(|sc| scene::pick_where(sc, r, &|x| self.pickable(x)))
+    }
+
+    /// Select everything inside a box on screen. `mode` 0 replaces the selection, 1 adds to it,
+    /// 2 removes from it. Returns how many items the box held.
+    pub fn box_select(&mut self, corners: &[Ray; 4], mode: i32) -> usize {
+        let f = Frustum::from_rays(corners);
+        let hits = self.scene.as_ref().map(|sc| scene::in_frustum(sc, &f, &|x| self.pickable(x))).unwrap_or_default();
+        let n = hits.len();
+        self.handle = None;
+        match mode {
+            1 => {
+                let have: HashSet<u64> = self.selection.iter().copied().collect();
+                self.selection.extend(hits.into_iter().filter(|h| !have.contains(h)));
+            }
+            2 => {
+                let drop: HashSet<u64> = hits.into_iter().collect();
+                self.selection.retain(|h| !drop.contains(h));
+            }
+            _ => self.selection = hits,
+        }
+        self.rebuild();
+        n
+    }
+
+    /// Every visible item the pick filter allows.
+    pub fn select_all(&mut self) {
+        let all: Vec<u64> = match &self.scene {
+            Some(sc) => sc.points.iter().map(|p| p.0).chain(sc.proxies.iter().map(|p| p.hash)).filter(|h| self.pickable(*h)).collect(),
+            None => vec![],
+        };
+        self.selection = all;
+        self.handle = None;
+        self.rebuild();
+    }
+
+    /// Hide the selected objects and the paths of the selected points (Unhide All shows them).
+    pub fn hide_selection(&mut self) -> usize {
+        let Some(doc) = &self.doc else { return 0 };
+        let mut n = 0;
+        for h in std::mem::take(&mut self.selection) {
+            match doc.find(h) {
+                Some((Loc::Actor(_), _)) => n += self.view.hidden_items.insert(h) as usize,
+                Some((Loc::Point(r, _) | Loc::Rail(r), _)) => n += self.view.hidden_rails.insert(hash_of(&doc.rails()[r])) as usize,
+                None => {}
+            }
+        }
+        self.handle = None;
+        self.rebuild();
+        n
+    }
+
+    /// Show everything again: hidden items, paths, groups, path types and categories.
+    pub fn unhide_all(&mut self) {
+        let v = &mut self.view;
+        v.hidden_items.clear();
+        v.hidden_rails.clear();
+        v.hidden_actor_names.clear();
+        v.hidden_rail_types.clear();
+        v.hidden_categories.clear();
+        self.rebuild();
+    }
+
     pub fn ground_hit(&self, r: &Ray) -> Option<Vec3> {
         let g = self.ground.as_ref()?;
-        g.hit(r, 20000.0).map(|(d, _)| r.origin + r.dir * d)
+        // far enough for the top view's camera, 30 km up
+        g.hit(r, 100_000.0).map(|(d, _)| r.origin + r.dir * d)
     }
 
-    pub fn placement(&self, r: &Ray) -> Vec3 {
-        self.ground_hit(r).unwrap_or(r.origin + r.dir * 30.0)
+    /// A height to place things at when the stage surface isn't under the mouse: the selection's,
+    /// else the middle of the course's objects.
+    pub fn working_height(&self) -> Option<f32> {
+        let doc = self.doc.as_ref()?;
+        if let Some(&h) = self.selection.first() {
+            let h = match doc.find(h) {
+                Some((Loc::Rail(_), r)) => Document::points(r).first().map(hash_of).unwrap_or(h),
+                _ => h,
+            };
+            if let Some((p, ..)) = doc.transform(h) {
+                return Some(p.y);
+            }
+        }
+        let mut ys: Vec<f32> = doc.actors().iter().map(|a| a.vec3("Translate", [0.0; 3])[1]).collect();
+        ys.sort_by(|a, b| a.total_cmp(b));
+        ys.get(ys.len() / 2).copied()
     }
 
-    pub fn begin_drag(&mut self, axis: usize, r: &Ray) -> bool {
+    /// Where a click puts something: the stage surface under it; without one, the level `y`
+    /// (the height of the point a path continues from); else 30 m in front of the camera.
+    pub fn placement_at(&self, r: &Ray, y: Option<f32>) -> Vec3 {
+        self.ground_hit(r)
+            .or_else(|| y.and_then(|y| ray_plane(r, Vec3::new(0.0, y, 0.0), Vec3::Y)).filter(|p| p.distance(r.origin) < 100_000.0))
+            .unwrap_or(r.origin + r.dir * 30.0)
+    }
+
+    /// Start dragging the selection with the gizmo (or a Bézier handle, when one is picked).
+    /// `mode` overrides the gizmo's mode (G, R and T); `aligned` keeps a dragged handle's
+    /// partner on its line; `record` is false when a modal drag restarts on another axis.
+    pub fn begin_drag(&mut self, mode: Option<GizmoMode>, axis: usize, r: &Ray, aligned: bool, record: bool) -> bool {
+        let mode = mode.unwrap_or(self.gizmo_mode);
+        let handle = self.handle.filter(|_| mode == GizmoMode::Translate).and_then(|(h, w)| Some((h, w, self.handle_pos(h, w)?)));
         let Some(doc) = &mut self.doc else { return false };
-        let items: Vec<(u64, Vec3, Quat, Vec3)> =
-            self.selection.iter().filter_map(|h| doc.transform(*h).map(|(p, q, s)| (*h, p, q, s))).collect();
+        let items: Vec<(u64, Vec3, Quat, Vec3)> = match handle {
+            Some((h, _, c)) => vec![(h, c, Quat::IDENTITY, Vec3::ONE)],
+            None => doc.movable(&self.selection),
+        };
         if items.is_empty() {
             return false;
         }
+        let ctl = |doc: &Document, h: u64| -> (Option<Vec3>, Option<Vec3>) {
+            match doc.find(h) {
+                Some((Loc::Point(..), e)) => {
+                    let c = |k: &str| e.get(k).map(|c| Vec3::from(vec3(Some(c), [0.0; 3])));
+                    (c("Control0"), c("Control1"))
+                }
+                _ => (None, None),
+            }
+        };
+        let controls = items.iter().map(|it| if handle.is_some() { (None, None) } else { ctl(doc, it.0) }).collect();
         let center = items.iter().map(|x| x.1).sum::<Vec3>() / items.len() as f32;
-        let frame = if self.gizmo_local && items.len() == 1 { items[0].2 } else { Quat::IDENTITY };
+        let frame = if self.gizmo_local && items.len() == 1 && handle.is_none() { items[0].2 } else { Quat::IDENTITY };
         let dir = match axis {
             0 => frame * Vec3::X,
             1 => frame * Vec3::Y,
             2 => frame * Vec3::Z,
             _ => -r.dir,
         };
-        let mode = self.gizmo_mode;
         let (start, start_param) = match (mode, axis) {
             (GizmoMode::Rotate, _) | (_, 3) => (ray_plane(r, center, dir).unwrap_or(center), 0.0),
             _ => (center, ray_line_param(r, center, dir).unwrap_or(0.0)),
         };
-        doc.push_undo();
-        self.drag = Some(Drag { mode, axis, center, dir, start, start_param, items });
+        let was_dirty = doc.dirty;
+        if record {
+            doc.push_undo_as(match (handle, mode) {
+                (Some(_), _) => "Move Curve Handle",
+                (None, GizmoMode::Translate) => "Move",
+                (None, GizmoMode::Rotate) => "Rotate",
+                (None, GizmoMode::Scale) => "Scale",
+            });
+        }
+        let handle = handle.map(|(_, w, _)| (w, aligned));
+        self.drag = Some(Drag { mode, axis, center, dir, start, start_param, items, controls, handle, moved: false, was_dirty });
         true
     }
 
-    /// Apply a drag; returns the hashes that moved.
-    pub fn drag_to(&mut self, r: &Ray) -> Vec<u64> {
-        let Some(d) = &self.drag else { return vec![] };
+    /// Restart a modal drag on another axis (3 = free), from where it began.
+    pub fn restart_drag(&mut self, axis: usize, r: &Ray) -> bool {
+        let Some(d) = self.drag.take() else { return false };
+        if let Some(doc) = &mut self.doc {
+            doc.revert_step();
+        }
+        self.rebuild();
+        let ok = self.begin_drag(Some(d.mode), axis, r, d.handle.is_some_and(|h| h.1), false);
+        if let Some(nd) = &mut self.drag {
+            nd.was_dirty = d.was_dirty;
+        }
+        ok
+    }
+
+    /// Apply a drag; returns the hashes that moved. `invert_snap` (Ctrl held) snaps when
+    /// snapping is off and moves freely when it is on.
+    pub fn drag_to(&mut self, r: &Ray, invert_snap: bool) -> Vec<u64> {
+        let snap_on = (self.snap.step > 0.0 || self.snap.angle > 0.0) != invert_snap;
+        let step = if !snap_on {
+            0.0
+        } else if self.snap.step > 0.0 {
+            self.snap.step
+        } else {
+            1.0
+        };
+        let angle = if !snap_on {
+            0.0
+        } else if self.snap.angle > 0.0 {
+            self.snap.angle
+        } else {
+            15.0
+        };
+        let Some(d) = &mut self.drag else { return vec![] };
         let Some(doc) = &mut self.doc else { return vec![] };
         let cat = self.cat.clone();
         let ground = self.ground.clone();
         let mut moved = vec![];
-        let snap = self.snap_ground && d.mode == GizmoMode::Translate;
-        for &(h, p0, q0, s0) in &d.items {
+        let snap_ground = self.snap_ground && d.mode == GizmoMode::Translate && d.handle.is_none();
+        for (k, &(h, p0, q0, s0)) in d.items.iter().enumerate() {
             let (p, q, s) = match (d.mode, d.axis) {
                 (GizmoMode::Translate, 3) => {
                     let Some(hit) = ray_plane(r, d.center, d.dir) else { continue };
-                    (p0 + (hit - d.start), q0, s0)
+                    let delta = hit - d.start;
+                    (p0 + Vec3::new(snap_to(delta.x, step), snap_to(delta.y, step), snap_to(delta.z, step)), q0, s0)
                 }
                 (GizmoMode::Translate, _) => {
                     let Some(t) = ray_line_param(r, d.center, d.dir) else { continue };
-                    (p0 + d.dir * (t - d.start_param), q0, s0)
+                    (p0 + d.dir * snap_to(t - d.start_param, step), q0, s0)
                 }
                 (GizmoMode::Rotate, _) => {
                     let Some(hit) = ray_plane(r, d.center, d.dir) else { continue };
                     let (a, b) = ((d.start - d.center).normalize_or_zero(), (hit - d.center).normalize_or_zero());
-                    let angle = a.cross(b).dot(d.dir).atan2(a.dot(b));
+                    let angle = snap_to(a.cross(b).dot(d.dir).atan2(a.dot(b)), angle.to_radians());
                     let rq = Quat::from_axis_angle(d.dir.normalize(), angle);
                     (d.center + rq * (p0 - d.center), rq * q0, s0)
+                }
+                (GizmoMode::Scale, 3) => {
+                    let Some(hit) = ray_plane(r, d.center, d.dir) else { continue };
+                    let base = d.start.distance(d.center);
+                    let ratio = if base < 1e-3 { 1.0 } else { hit.distance(d.center) / base };
+                    let ratio = if snap_on { snap_to(ratio, 0.1).max(0.1) } else { ratio.clamp(0.01, 100.0) };
+                    (d.center + (p0 - d.center) * ratio, q0, s0 * ratio)
                 }
                 (GizmoMode::Scale, _) => {
                     let Some(t) = ray_line_param(r, d.center, d.dir) else { continue };
                     let ratio = if d.start_param.abs() < 1e-3 { 1.0 } else { (t / d.start_param).clamp(0.01, 100.0) };
+                    let ratio = if snap_on { snap_to(ratio, 0.1).max(0.1) } else { ratio };
                     let mut s = s0;
-                    if d.axis < 3 {
-                        s[d.axis] = s0[d.axis] * ratio;
-                    }
+                    s[d.axis] = s0[d.axis] * ratio;
                     (p0, q0, s)
                 }
             };
             let mut p = p;
-            if snap && let (Some(g), Some((loc, e))) = (&ground, doc.find(h)) {
+            if snap_ground && let (Some(g), Some((loc, e))) = (&ground, doc.find(h)) {
                 let lift = if matches!(loc, Loc::Actor(_)) {
                     cat.as_ref().and_then(|c| c.actor(e.str_or("Gyaml", ""))).and_then(|a| a.banc_offset).map(|o| o[1]).unwrap_or(0.0)
                 } else {
@@ -447,15 +677,62 @@ impl State {
                     p.y = y + lift;
                 }
             }
-            doc.set_transform(h, p, q, s);
+            if let Some((which, aligned)) = d.handle {
+                doc.set_handle(h, which, p, aligned);
+            } else {
+                doc.set_transform(h, p, q, s);
+                // a point's handles turn, scale and move with it
+                if let Some(&(c0, c1)) = d.controls.get(k)
+                    && (c0.is_some() || c1.is_some())
+                {
+                    let turn = q * q0.inverse();
+                    let grow = if d.mode == GizmoMode::Scale { (s / s0).to_array().iter().product::<f32>() } else { 1.0 };
+                    let place = |c: Option<Vec3>| c.map(|c| p + turn * ((c - p0) * grow));
+                    doc.set_controls(h, place(c0), place(c1));
+                }
+            }
             moved.push(h);
         }
+        d.moved |= !moved.is_empty();
         self.rebuild();
         moved
     }
 
+    /// Finish a drag; a drag that never moved leaves no undo step.
     pub fn end_drag(&mut self) {
-        self.drag = None;
+        if let Some(d) = self.drag.take()
+            && !d.moved
+            && let Some(doc) = &mut self.doc
+        {
+            doc.cancel_step();
+            doc.dirty = d.was_dirty;
+        }
+    }
+
+    /// Cancel a drag (Esc or right click during G, R or T): everything goes back.
+    pub fn cancel_drag(&mut self) {
+        if let Some(d) = self.drag.take()
+            && let Some(doc) = &mut self.doc
+        {
+            doc.cancel_step();
+            doc.dirty = d.was_dirty;
+        }
+        self.rebuild();
+    }
+
+    pub fn dragging(&self) -> bool {
+        self.drag.is_some()
+    }
+
+    /// Everything the Problems panel lists.
+    pub fn problems_json(&self) -> Value {
+        let Some(doc) = &self.doc else { return json!([]) };
+        json!(
+            check::check(&doc.root, &doc.file, self.cat.as_deref())
+                .into_iter()
+                .map(|p| json!({"severity": p.severity.name(), "message": p.message, "items": p.items.iter().map(|h| h.to_string()).collect::<Vec<_>>(), "fix": p.fix}))
+                .collect::<Vec<_>>()
+        )
     }
 
     // ------------------------------------------------------------ outliner
@@ -489,8 +766,9 @@ impl State {
                     let dynk: Vec<String> =
                         a.get("Dynamic").and_then(|d| d.as_map()).map(|m| m.keys().cloned().collect()).unwrap_or_default();
                     let at = format!("{:.1}, {:.1}, {:.1}", t[0], t[1], t[2]);
+                    // the parameter names would be cut to a few letters after the position: tooltip only
                     rows.push(json!({"kind": "item", "key": format!("h:{h}"), "hash": h.to_string(), "label": format!("#{i}"),
-                        "sub": if dynk.is_empty() { at } else { format!("{at}  {}", dynk.join(", ")) }, "selected": sel.contains(&h)}));
+                        "sub": at, "tip": if dynk.is_empty() { String::new() } else { format!("Parameters set: {}", dynk.join(", ")) }, "selected": sel.contains(&h)}));
                 }
             }
         }
@@ -580,6 +858,40 @@ impl State {
 
     // ------------------------------------------------------------ properties
 
+    /// The parameter table of an object, path or point.
+    pub fn param_table(&self, h: u64) -> Option<String> {
+        let (doc, cat) = (self.doc.as_ref()?, self.cat.as_ref()?);
+        match doc.find(h)? {
+            (Loc::Actor(_), a) => cat.actor(a.str_or("Gyaml", "")).map(|i| i.banc_param.clone()),
+            (Loc::Point(r, _), _) => cat.data.rails.get(doc.rails()[r].str_or("Name", "")).map(|d| d.point_param.clone()),
+            (Loc::Rail(_), r) => cat.data.rails.get(r.str_or("Name", "")).map(|d| d.rail_param.clone()),
+        }
+        .filter(|t| !t.is_empty())
+    }
+
+    /// The selected items that share the first one's parameter table (all of them when they
+    /// all do), for editing a parameter on many at once.
+    pub fn param_targets(&self) -> Vec<u64> {
+        let Some(first) = self.selection.first().and_then(|h| self.param_table(*h)) else { return self.selection.clone() };
+        self.selection.iter().copied().filter(|h| self.param_table(*h).as_deref() == Some(first.as_str())).collect()
+    }
+
+    /// Parameter rows for several items of one table: a value they all share shows as set,
+    /// differing values as "mixed".
+    fn shared_params_json(&self, owners: &[&Byml], table: &str) -> Value {
+        let Some(cat) = &self.cat else { return json!([]) };
+        let mut schema: Vec<&Param> = cat.data.params.get(table).map(|v| v.iter().collect()).unwrap_or_default();
+        schema.sort_by(|a, b| a.name.cmp(&b.name));
+        json!(schema.iter().map(|p| {
+            let vals: Vec<Option<&Byml>> = owners.iter().map(|o| o.get("Dynamic").and_then(|d| d.get(&p.name))).collect();
+            let all_same = vals.windows(2).all(|w| w[0] == w[1]);
+            let cur = if all_same { vals.first().copied().flatten() } else { None };
+            json!({"name": p.name, "label": p.label, "type": p.kind, "enumName": p.enum_name, "init": p.init, "initName": p.init_name,
+                "set": cur.is_some() || !all_same, "mixed": !all_same, "value": cur.map(display).unwrap_or(Value::Null),
+                "suggest": cat.data.seen_values.get(&p.name).cloned().unwrap_or_default()})
+        }).collect::<Vec<_>>())
+    }
+
     fn params_json(&self, owner: &Byml, table: &str) -> Value {
         let Some(cat) = &self.cat else { return json!([]) };
         let empty = BTreeMap::new();
@@ -658,7 +970,61 @@ impl State {
                 "padEntries": d.pad.as_ref().map(|p| if let Byml::Hash64(m) = p { m.len() } else { 0 }).unwrap_or(0), "padFile": d.pad_file, "fromMod": d.from_mod});
         }
         if self.selection.len() > 1 {
-            return json!({"kind": "multi", "count": self.selection.len()});
+            let (mut objects, mut points, mut paths) = (0, 0, 0);
+            let mut names: BTreeMap<String, usize> = BTreeMap::new();
+            for h in &self.selection {
+                match doc.find(*h) {
+                    Some((Loc::Actor(_), a)) => {
+                        objects += 1;
+                        *names.entry(a.str_or("Name", "").to_string()).or_default() += 1;
+                    }
+                    Some((Loc::Point(r, _), _)) => {
+                        points += 1;
+                        *names.entry(doc.rails()[r].str_or("Name", "").to_string() + " points").or_default() += 1;
+                    }
+                    Some((Loc::Rail(_), r)) => {
+                        paths += 1;
+                        *names.entry(r.str_or("Name", "").to_string() + " paths").or_default() += 1;
+                    }
+                    None => {}
+                }
+            }
+            let pos: Vec<Vec3> = doc.movable(&self.selection).into_iter().map(|x| x.1).collect();
+            let mut types: Vec<(String, usize)> = names.into_iter().collect();
+            types.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+            let (centre, size) = if pos.is_empty() {
+                (Vec3::ZERO, Vec3::ZERO)
+            } else {
+                let mn = pos.iter().fold(Vec3::splat(f32::MAX), |a, b| a.min(*b));
+                let mx = pos.iter().fold(Vec3::splat(f32::MIN), |a, b| a.max(*b));
+                (pos.iter().sum::<Vec3>() / pos.len() as f32, mx - mn)
+            };
+            let distance = (pos.len() == 2).then(|| pos[0].distance(pos[1]));
+            // parameters, when every selected item has the same table
+            let table = self.param_table(self.selection[0]);
+            let shared = table.as_ref().is_some_and(|t| self.selection.iter().all(|h| self.param_table(*h).as_ref() == Some(t)));
+            let params = match (&table, shared) {
+                (Some(t), true) => {
+                    let owners: Vec<&Byml> = self.selection.iter().filter_map(|h| doc.find(*h).map(|x| x.1)).collect();
+                    self.shared_params_json(&owners, t)
+                }
+                _ => json!([]),
+            };
+            let rails = doc.rail_targets(&self.selection).len();
+            // selected lap points, and how many of them are checkpoints
+            let (mut lap_points, mut checkpoints) = (0, 0);
+            for h in &self.selection {
+                if let Some((Loc::Point(r, _), p)) = doc.find(*h)
+                    && doc.rails()[r].str_or("Name", "") == mkwtrack::checkpoints::LAP
+                {
+                    lap_points += 1;
+                    checkpoints += mkwtrack::checkpoints::is_checkpoint(p) as usize;
+                }
+            }
+            return json!({"kind": "multi", "lapPoints": lap_points, "checkpoints": checkpoints, "count": self.selection.len(), "objects": objects, "points": points, "paths": paths, "rails": rails,
+                "types": types.iter().take(6).map(|(n, c)| json!({"name": n, "count": c})).collect::<Vec<_>>(), "moreTypes": types.len().saturating_sub(6),
+                "centre": v3(centre), "size": v3(size), "distance": distance, "positioned": pos.len(),
+                "paramTable": if shared { table } else { None }, "params": params});
         }
         let h = self.selection[0];
         let Some((loc, e)) = doc.find(h) else { return json!({"kind": "none"}) };
@@ -695,7 +1061,19 @@ impl State {
                 let two = |k: &str| {
                     e.get(k).and_then(|v| v.as_array()).map(|a| json!(a.iter().map(|x| x.as_f64().unwrap_or(0.0)).collect::<Vec<_>>()))
                 };
-                json!({"kind": "point", "hash": h.to_string(), "rail": name, "railHash": hash_of(rail).to_string(), "index": i, "count": Document::points(rail).len(),
+                let lap = name == mkwtrack::checkpoints::LAP;
+                let checkpoint = (lap && mkwtrack::checkpoints::is_checkpoint(e))
+                    .then(|| e.get("Dynamic").and_then(|d| d.get(mkwtrack::checkpoints::KEY)).and_then(|v| v.as_f64()).unwrap_or(0.0));
+                let marker = mkwtrack::checkpoints::MARKERS
+                    .iter()
+                    .find(|k| lap && e.get("Dynamic").and_then(|d| d.get(k)).and_then(|b| b.as_bool()) == Some(true))
+                    .map(|k| match *k {
+                        "IsStart" => "start",
+                        "IsLapCheck" => "lap check",
+                        _ => "goal",
+                    });
+                json!({"kind": "point", "hash": h.to_string(), "rail": name, "lap": lap, "checkpoint": checkpoint, "lapMarker": marker, "railHash": hash_of(rail).to_string(), "index": i, "count": Document::points(rail).len(),
+                    "closed": rail.get("IsClosed").and_then(|b| b.as_bool()).unwrap_or(false), "handle": self.handle.map(|x| x.1),
                     "translate": e.vec3("Translation", [0.0; 3]), "rotate": deg(e.vec3("Rotate", [0.0; 3])),
                     "rectSize": two("RectSize"), "rectOffset": two("RectOffset"), "control0": opt("Control0"), "control1": opt("Control1"),
                     "params": self.params_json(e, def.map(|d| d.point_param.as_str()).unwrap_or("")), "paramTable": def.map(|d| d.point_param.clone()),
@@ -714,9 +1092,11 @@ impl State {
 
     // ------------------------------------------------------------ assets
 
-    pub fn asset_json(&self, filter: &str, category: &str, placed_only: bool) -> Value {
+    /// The asset browser's list. `category` "favorites" lists the starred ones.
+    pub fn asset_json(&self, filter: &str, category: &str, placed_only: bool, favorites: &std::collections::BTreeSet<String>) -> Value {
         let Some(cat) = &self.cat else { return json!([]) };
         let f = filter.to_lowercase();
+        let (category, favs_only) = if category == "favorites" { ("", true) } else { (category, false) };
         let in_doc: HashSet<&str> =
             self.doc.as_ref().map(|d| d.actors().iter().map(|a| a.str_or("Name", "")).collect()).unwrap_or_default();
         let mut out: Vec<(bool, &String, &ActorInfo)> = cat
@@ -724,7 +1104,8 @@ impl State {
             .actors
             .iter()
             .filter(|(n, a)| {
-                (!placed_only || a.placed)
+                (!placed_only || a.placed || favs_only)
+                    && (!favs_only || favorites.contains(n.as_str()))
                     && (category.is_empty() || a.category == category)
                     && (f.is_empty() || n.to_lowercase().contains(&f) || a.label.to_lowercase().contains(&f))
             })
@@ -732,7 +1113,7 @@ impl State {
             .collect();
         out.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
         json!(out.iter().take(600).map(|(here, n, a)| {
-            json!({"name": n, "short": short_name(n), "label": a.label, "category": a.category, "model": a.model.is_some(), "inCourse": here,
+            json!({"name": n, "short": short_name(n), "label": a.label, "category": a.category, "model": a.model.is_some(), "inCourse": here, "fav": favorites.contains(n.as_str()),
                    "color": scene::hex(scene::category_color(&a.category)), "thumb": thumb_url(Some(a))})
         }).collect::<Vec<_>>())
     }
@@ -787,7 +1168,9 @@ impl State {
         cats.sort();
         json!({"rails": rails.iter().map(|r| json!({"name": r, "visible": !self.view.hidden_rail_types.contains(*r), "color": scene::hex(scene::rail_color(r))})).collect::<Vec<_>>(),
                "categories": cats.iter().map(|c| json!({"name": c, "visible": !self.view.hidden_categories.contains(c), "color": scene::hex(scene::category_color(c))})).collect::<Vec<_>>(),
-               "stage": self.show_stage, "models": self.view.models, "xray": self.xray, "widths": self.view.widths, "snap": self.snap_ground})
+               "stage": self.show_stage, "models": self.view.models, "xray": self.xray, "widths": self.view.widths, "snap": self.snap_ground,
+               "pickFilter": self.pick_filter, "snapStep": self.snap.step, "snapAngle": self.snap.angle,
+               "hidden": self.view.hidden_items.len() + self.view.hidden_rails.len() + self.view.hidden_actor_names.len() + self.view.hidden_rail_types.len() + self.view.hidden_categories.len()})
     }
 
     // ------------------------------------------------------------ save
@@ -818,7 +1201,9 @@ impl State {
             if let Some(d) = &mut self.doc {
                 d.dirty = false;
             }
-            self.log(format!("Saved {} file(s) to mod \"{}\" ({})", res.written.len(), self.mod_name, mod_dir.display()));
+            // the folder first, so the status bar (the last line) stays short
+            self.log(format!("Mod folder: {}", mod_dir.display()));
+            self.log(format!("Saved {} file(s) to mod \"{}\"", res.written.len(), self.mod_name));
             for n in &res.notes {
                 self.log(format!("  {n}"));
             }

@@ -41,7 +41,6 @@ usage: mkw-emutest --dump DIR --eden EDEN_CLI --keys PROD_KEYS --out DIR [option
                      an emulator data folder (with nand/ and sdmc/) to copy system and save
                      data from, e.g. ~/.local/share/eden after the game has been played once
   --out DIR          where profiles, screenshots and reports go
-  --models DIR       exported models; with them, new objects are dropped onto the stage [MKW_MODELS]
   --xvfb FILE        X server to run the emulator on (default: Xvfb)
   --display N        X display number (default: 97)
   --memory-max SIZE  memory cap for the emulator through systemd-run (default 6G, 'none' to disable)
@@ -60,7 +59,6 @@ struct Opts {
     keys: PathBuf,
     profile_template: Option<PathBuf>,
     out: PathBuf,
-    models: Option<PathBuf>,
     xvfb: String,
     display: u32,
     memory_max: Option<String>,
@@ -79,7 +77,6 @@ fn parse_args() -> mkwtrack::Result<Opts> {
         keys: env("MKW_KEYS").unwrap_or_default(),
         profile_template: None,
         out: PathBuf::new(),
-        models: env("MKW_MODELS"),
         xvfb: "Xvfb".into(),
         display: 97,
         memory_max: Some("6G".into()),
@@ -99,7 +96,10 @@ fn parse_args() -> mkwtrack::Result<Opts> {
             "--keys" => o.keys = val()?.into(),
             "--profile-template" => o.profile_template = Some(val()?.into()),
             "--out" => o.out = val()?.into(),
-            "--models" => o.models = Some(val()?.into()),
+            // models come from the romfs now; accepted so older command lines still work
+            "--models" => {
+                val()?;
+            }
             "--xvfb" => o.xvfb = val()?,
             "--display" => o.display = num(val()?)? as u32,
             "--memory-max" => o.memory_max = Some(val()?).filter(|v| v != "none"),
@@ -142,7 +142,6 @@ fn parse_args() -> mkwtrack::Result<Opts> {
     o.eden = abs(&o.eden);
     o.keys = abs(&o.keys);
     o.out = abs(&o.out);
-    o.models = o.models.as_deref().map(abs);
     o.profile_template = o.profile_template.as_deref().map(abs);
     Ok(o)
 }
@@ -362,13 +361,10 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
-fn ground_for_course(cat: &Catalog, ws: &Workspace, models: &Path) -> Option<Bvh> {
+fn ground_for_course(cat: &Catalog, ws: &Workspace) -> Option<Bvh> {
     let doc = Document::new(ws.load(COURSE, None).ok()?);
     let stages: Vec<_> = stages_for(cat, &doc.root, 12).into_iter().cloned().collect();
-    let bvh = mkwtrack::scene::stage_bvh(&stages, |rel| {
-        let d = std::fs::read(models.join(rel)).ok()?;
-        mkwtrack::fbx::load_model(&d).ok().map(Arc::new)
-    });
+    let bvh = mkwtrack::scene::stage_bvh(&stages, |rel| mkwtrack::bfres::load(&ws.romfs, rel).ok().map(Arc::new));
     (!bvh.is_empty()).then_some(bvh)
 }
 
@@ -397,16 +393,12 @@ fn main() {
     let result = (|| -> mkwtrack::Result<bool> {
         std::fs::create_dir_all(&o.out).map_err(|e| e.to_string())?;
         let romfs = o.dump.join("romfs");
-        let models = o.models.clone().unwrap_or_else(|| o.out.join("no-models"));
         say("reading the game catalog");
-        let cat = Catalog::load(&romfs, &models, &o.out.join("catalog-cache"), &|m| say(m))?;
-        let ground = o
-            .models
-            .as_ref()
-            .and_then(|m| ground_for_course(&cat, &Workspace { romfs: romfs.clone(), mods_root: o.out.join("unused") }, m));
+        let cat = Catalog::load(&romfs, &o.out.join("catalog-cache"), &|m| say(m))?;
+        let ground = ground_for_course(&cat, &Workspace { romfs: romfs.clone(), mods_root: o.out.join("unused") });
         say(format!(
             "stage surface: {}",
-            ground.as_ref().map(|g| format!("{} triangles", g.len())).unwrap_or("none (pass --models to drop objects onto it)".into())
+            ground.as_ref().map(|g| format!("{} triangles", g.len())).unwrap_or("none (the stage models did not load)".into())
         ));
         if o.mods_only {
             for &sc in &o.scenarios {

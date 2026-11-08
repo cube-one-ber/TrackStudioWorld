@@ -7,6 +7,7 @@
 use crate::banc::hash_of;
 use crate::byml::{Byml, vec3};
 use crate::catalog::Catalog;
+use crate::checkpoints;
 use crate::error::Result;
 use crate::math::{euler_from_quat, quat_zyx};
 use crate::typedjson;
@@ -15,7 +16,7 @@ use glam::{Quat, Vec3};
 use std::collections::{HashMap, HashSet};
 
 /// Point parameters that mark one specific point and must not be copied to a new one.
-const UNIQUE_POINT_KEYS: [&str; 5] = ["IsStart", "IsGoal", "IsLapCheck", "CheckPoint", "ChangeId"];
+pub(crate) const UNIQUE_POINT_KEYS: [&str; 5] = ["IsStart", "IsGoal", "IsLapCheck", "CheckPoint", "ChangeId"];
 /// Link types the editor creates.
 pub const LINK_TYPES: [&str; 3] = ["BasicSignal", "MessageLink", "CreateLink"];
 /// Undo steps kept.
@@ -34,6 +35,8 @@ struct Snapshot {
     root: Byml,
     pad: Option<Byml>,
     deleted: HashSet<u64>,
+    /// what the step did ("Move", "Delete"...), for the Undo and Redo menu items
+    label: String,
 }
 
 pub struct Document {
@@ -60,7 +63,7 @@ pub fn new_uuid() -> String {
     format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
 }
 
-fn link(src: u64, dst: u64, kind: &str) -> Byml {
+pub(crate) fn link(src: u64, dst: u64, kind: &str) -> Byml {
     let mut l = Byml::map();
     l.insert("Dst", Byml::U64(dst));
     l.insert("Gyaml", Byml::Str(format!("Work/Gyml/LinkDefGParam/{kind}.gear__LinkDefGParam.gyml")));
@@ -69,12 +72,17 @@ fn link(src: u64, dst: u64, kind: &str) -> Byml {
     l
 }
 
-fn point_pos(p: &Byml) -> Vec3 {
+pub(crate) fn point_pos(p: &Byml) -> Vec3 {
     Vec3::from(p.vec3("Translation", [0.0; 3]))
 }
 
+/// A point's Bézier handle (`Control0` or `Control1`), if it has one.
+pub(crate) fn control(p: &Byml, key: &str) -> Option<Vec3> {
+    p.get(key).map(|c| Vec3::from(vec3(Some(c), [0.0; 3])))
+}
+
 /// Move a point's Bézier handles along with it.
-fn shift_controls(p: &mut Byml, by: Vec3) {
+pub(crate) fn shift_controls(p: &mut Byml, by: Vec3) {
     for k in ["Control0", "Control1"] {
         if let Some(c) = p.get(k) {
             let c = Vec3::from(vec3(Some(c), [0.0; 3])) + by;
@@ -83,8 +91,24 @@ fn shift_controls(p: &mut Byml, by: Vec3) {
     }
 }
 
+/// A curved segment split in half (de Casteljau at t = 0.5).
+#[derive(Clone, Copy)]
+struct CurveSplit {
+    /// the point after the split segment
+    next: usize,
+    /// whether the segment's start had an outgoing handle, and its end an incoming one
+    had_out: bool,
+    had_in: bool,
+    /// the halves' outer handles: the start's new outgoing one and the end's new incoming one
+    out_half: Vec3,
+    in_half: Vec3,
+    /// the new middle point's handles
+    new_in: Vec3,
+    new_out: Vec3,
+}
+
 /// Point every link of `item` from `src`.
-fn set_link_sources(item: &mut Byml, src: u64) {
+pub(crate) fn set_link_sources(item: &mut Byml, src: u64) {
     if let Some(Byml::Array(ls)) = item.get_mut("Links") {
         for l in ls.iter_mut() {
             l.insert("Src", Byml::U64(src));
@@ -134,7 +158,7 @@ impl Document {
         rail.array("Points")
     }
 
-    fn points_mut(rail: &mut Byml) -> &mut Vec<Byml> {
+    pub(crate) fn points_mut(rail: &mut Byml) -> &mut Vec<Byml> {
         rail.array_mut("Points")
     }
 
@@ -195,11 +219,22 @@ impl Document {
         }
     }
 
+    /// Give the lap checkpoints their numbers (see [`checkpoints`]); every edit that can change
+    /// the lap graph or which points are checkpoints calls this. Returns how many changed.
+    pub fn renumber_checkpoints(&mut self) -> usize {
+        checkpoints::renumber(&mut self.root)
+    }
+
     // ------------------------------------------------------------ undo
 
     /// Record the current state as an undo step; call before every change.
     pub fn push_undo(&mut self) {
-        self.undo.push(Snapshot { root: self.root.clone(), pad: self.pad.clone(), deleted: self.deleted.clone() });
+        self.push_undo_as("Edit");
+    }
+
+    /// [`push_undo`](Self::push_undo) with a name for the Undo and Redo menu items.
+    pub fn push_undo_as(&mut self, label: &str) {
+        self.undo.push(Snapshot { root: self.root.clone(), pad: self.pad.clone(), deleted: self.deleted.clone(), label: label.into() });
         if self.undo.len() > UNDO_LIMIT {
             self.undo.remove(0);
         }
@@ -215,15 +250,50 @@ impl Document {
         !self.redo.is_empty()
     }
 
+    /// What Undo would undo, e.g. "Move".
+    pub fn undo_label(&self) -> Option<&str> {
+        self.undo.last().map(|s| s.label.as_str())
+    }
+
+    /// What Redo would redo.
+    pub fn redo_label(&self) -> Option<&str> {
+        self.redo.last().map(|s| s.label.as_str())
+    }
+
+    /// Rename the newest undo step (a drag records "Move" when it starts and learns later
+    /// whether it moved, rotated or scaled).
+    pub fn relabel_undo(&mut self, label: &str) {
+        if let Some(s) = self.undo.last_mut() {
+            s.label = label.into();
+        }
+    }
+
     fn restore(&mut self, s: Snapshot) -> Snapshot {
         let cur = Snapshot {
             root: std::mem::replace(&mut self.root, s.root),
             pad: std::mem::replace(&mut self.pad, s.pad),
             deleted: std::mem::replace(&mut self.deleted, s.deleted),
+            label: s.label,
         };
         self.reindex();
         self.dirty = true;
         cur
+    }
+
+    /// Go back to the state the newest undo step recorded, keeping the step (a modal move
+    /// that switches axis starts again from where it began).
+    pub fn revert_step(&mut self) {
+        let Some(s) = self.undo.last().cloned() else { return };
+        self.root = s.root;
+        self.pad = s.pad;
+        self.deleted = s.deleted;
+        self.reindex();
+    }
+
+    /// Drop the newest step and its changes, as if it never happened (a cancelled drag).
+    pub fn cancel_step(&mut self) {
+        self.revert_step();
+        self.undo.pop();
     }
 
     pub fn undo(&mut self) -> bool {
@@ -242,14 +312,37 @@ impl Document {
 
     // ------------------------------------------------------------ transforms
 
-    /// (position, rotation, scale) of an object or point.
+    /// (position, rotation, scale) of an object or point (a path has none of its own).
     pub fn transform(&self, hash: u64) -> Option<(Vec3, Quat, Vec3)> {
         let (loc, e) = self.find(hash)?;
         let rot = quat_zyx(e.vec3("Rotate", [0.0; 3]));
-        Some(match loc {
-            Loc::Actor(_) => (Vec3::from(e.vec3("Translate", [0.0; 3])), rot, Vec3::from(e.vec3("Scale", [1.0; 3]))),
-            _ => (point_pos(e), rot, Vec3::ONE),
-        })
+        match loc {
+            Loc::Actor(_) => Some((Vec3::from(e.vec3("Translate", [0.0; 3])), rot, Vec3::from(e.vec3("Scale", [1.0; 3])))),
+            Loc::Point(..) => Some((point_pos(e), rot, Vec3::ONE)),
+            Loc::Rail(_) => None,
+        }
+    }
+
+    /// The objects and points a selection moves (a path means its points), each once, with
+    /// their transforms.
+    pub fn movable(&self, sel: &[u64]) -> Vec<(u64, Vec3, Quat, Vec3)> {
+        let mut seen = HashSet::new();
+        let mut out = vec![];
+        for h in sel {
+            let hs: Vec<u64> = match self.find(*h) {
+                Some((Loc::Rail(_), r)) => Self::points(r).iter().map(hash_of).collect(),
+                Some(_) => vec![*h],
+                None => vec![],
+            };
+            for h in hs {
+                if seen.insert(h)
+                    && let Some((p, q, s)) = self.transform(h)
+                {
+                    out.push((h, p, q, s));
+                }
+            }
+        }
+        out
     }
 
     /// Set a transform without recording undo (a drag records one step when it starts).
@@ -280,10 +373,47 @@ impl Document {
         self.dirty = true;
     }
 
+    /// Set a point's Bézier handles without recording undo (drags move them with the point:
+    /// `None` leaves a handle as it is).
+    pub fn set_controls(&mut self, hash: u64, c0: Option<Vec3>, c1: Option<Vec3>) {
+        let Some(loc @ Loc::Point(..)) = self.index.get(&hash).copied() else { return };
+        let Some(e) = self.get_mut(loc) else { return };
+        for (k, c) in [("Control0", c0), ("Control1", c1)] {
+            if let Some(c) = c {
+                e.insert(k, Byml::floats(&c.to_array()));
+            }
+        }
+        self.dirty = true;
+    }
+
+    /// Move one Bézier handle of a point (`which` 0 is `Control0`, 1 is `Control1`) without
+    /// recording undo. With `aligned`, the other handle turns to stay on the same line
+    /// through the point, keeping its length.
+    pub fn set_handle(&mut self, hash: u64, which: usize, pos: Vec3, aligned: bool) {
+        let Some(loc @ Loc::Point(..)) = self.index.get(&hash).copied() else { return };
+        let Some(e) = self.get_mut(loc) else { return };
+        let (key, other) = if which == 0 { ("Control0", "Control1") } else { ("Control1", "Control0") };
+        e.insert(key, Byml::floats(&pos.to_array()));
+        let p = point_pos(e);
+        if aligned && let Some(o) = control(e, other) {
+            let dir = (p - pos).normalize_or_zero();
+            if dir != Vec3::ZERO {
+                e.insert(other, Byml::floats(&(p + dir * o.distance(p)).to_array()));
+            }
+        }
+        self.dirty = true;
+    }
+
     /// Set one vector field (Translate, Rotate, Scale, Translation, RectSize, Control0...).
     pub fn set_vector(&mut self, hash: u64, key: &str, v: &[f32]) {
         let Some(loc) = self.index.get(&hash).copied() else { return };
-        self.push_undo();
+        self.push_undo_as(match key {
+            "Rotate" => "Rotate",
+            "Scale" => "Scale",
+            "Control0" | "Control1" => "Move Curve Handle",
+            "RectSize" | "RectOffset" => "Resize Gate",
+            _ => "Move",
+        });
         let Some(e) = self.get_mut(loc) else { return };
         if key == "Translation" && v.len() == 3 {
             let moved = Vec3::new(v[0], v[1], v[2]) - point_pos(e);
@@ -296,27 +426,38 @@ impl Document {
 
     /// Set (or with None, remove) one parameter under `Dynamic`.
     pub fn set_dynamic(&mut self, hash: u64, key: &str, value: Option<Byml>) {
-        let Some(loc) = self.index.get(&hash).copied() else { return };
-        self.push_undo();
-        let Some(e) = self.get_mut(loc) else { return };
-        if e.get("Dynamic").and_then(|d| d.as_map()).is_none() {
-            e.insert("Dynamic", Byml::map());
+        self.set_dynamic_many(&[hash], key, value);
+    }
+
+    /// Set (or remove) one parameter on several objects or points, as one undo step.
+    pub fn set_dynamic_many(&mut self, hashes: &[u64], key: &str, value: Option<Byml>) {
+        let locs: Vec<Loc> = hashes.iter().filter_map(|h| self.index.get(h).copied()).collect();
+        if locs.is_empty() {
+            return;
         }
-        let dynamic = e.get_mut("Dynamic").expect("just inserted");
-        match value {
-            Some(v) => dynamic.insert(key, v),
-            None => {
-                dynamic.remove(key);
+        self.push_undo_as(if value.is_some() { "Set Parameter" } else { "Remove Parameter" });
+        for loc in locs {
+            let Some(e) = self.get_mut(loc) else { continue };
+            if e.get("Dynamic").and_then(|d| d.as_map()).is_none() {
+                e.insert("Dynamic", Byml::map());
+            }
+            let dynamic = e.get_mut("Dynamic").expect("just inserted");
+            match &value {
+                Some(v) => dynamic.insert(key, v.clone()),
+                None => {
+                    dynamic.remove(key);
+                }
+            }
+            if dynamic.as_map().is_some_and(|m| m.is_empty()) {
+                e.remove("Dynamic");
             }
         }
-        if dynamic.as_map().is_some_and(|m| m.is_empty()) {
-            e.remove("Dynamic");
-        }
+        self.renumber_checkpoints();
     }
 
     pub fn set_field(&mut self, hash: u64, key: &str, value: Option<Byml>) {
         let Some(loc) = self.index.get(&hash).copied() else { return };
-        self.push_undo();
+        self.push_undo_as(&format!("Set {key}"));
         if let Some(e) = self.get_mut(loc) {
             match value {
                 Some(v) => e.insert(key, v),
@@ -325,6 +466,7 @@ impl Document {
                 }
             }
         }
+        self.renumber_checkpoints();
     }
 
     /// Replace every key except `keep` with the fields from typed JSON text.
@@ -332,18 +474,19 @@ impl Document {
         let v: serde_json::Value = serde_json::from_str(json)?;
         let Byml::Map(new) = typedjson::from_json(&v)? else { return Err("expected a JSON object".into()) };
         let loc = *self.index.get(&hash).ok_or("nothing selected")?;
-        self.push_undo();
+        self.push_undo_as("Edit Fields");
         let m = self.get_mut(loc).and_then(|e| e.as_map_mut()).ok_or("not an object")?;
         m.retain(|k, _| keep.contains(&k.as_str()));
         m.extend(new.into_iter().filter(|(k, _)| !keep.contains(&k.as_str())));
         self.reindex();
+        self.renumber_checkpoints();
         Ok(())
     }
 
     /// Give point `to` a copy of point `from`'s PathAdditionalData entry, if it has one. Shipped
     /// courses give 99.6% of RoutePathGraph points an entry and no other point any, so new route
     /// points copy their neighbour's rather than leave the game a state it rarely ships with.
-    fn copy_pad(&mut self, from: u64, to: u64) {
+    pub(crate) fn copy_pad(&mut self, from: u64, to: u64) {
         if let Some(Byml::Hash64(m)) = &mut self.pad
             && let Some(e) = m.get(&from).cloned()
         {
@@ -353,7 +496,7 @@ impl Document {
 
     /// Set a PathAdditionalData value of a point.
     pub fn set_pad_value(&mut self, hash: u64, group: u64, key: &str, value: Byml) {
-        self.push_undo();
+        self.push_undo_as("Set Path Data");
         if let Some(Byml::Hash64(m)) = &mut self.pad
             && let Some(Byml::Hash64(g)) = m.get_mut(&hash)
             && let Some(e) = g.get_mut(&group)
@@ -365,7 +508,7 @@ impl Document {
     /// Add Bézier handles 4 m either side of a point along its heading, or remove them.
     pub fn toggle_curve(&mut self, hash: u64) {
         let Some(loc @ Loc::Point(..)) = self.index.get(&hash).copied() else { return };
-        self.push_undo();
+        self.push_undo_as("Curve Handles");
         let e = self.get_mut(loc).expect("indexed point");
         if e.get("Control0").is_some() || e.get("Control1").is_some() {
             e.remove("Control0");
@@ -386,8 +529,14 @@ impl Document {
     /// sits 1.5 m above the road, its offset), and the game only registers the offset as an
     /// editor-display field (next to `BancDummyShape` and `BancColor`), so it is added here.
     pub fn add_actor(&mut self, cat: &Catalog, name: &str, pos: Vec3, yaw: f32) -> Option<u64> {
+        cat.data.actors.get(name)?;
+        self.push_undo_as("Add Object");
+        self.add_actor_raw(cat, name, pos, yaw)
+    }
+
+    /// [`add_actor`](Self::add_actor) without recording an undo step.
+    pub(crate) fn add_actor_raw(&mut self, cat: &Catalog, name: &str, pos: Vec3, yaw: f32) -> Option<u64> {
         let info = cat.data.actors.get(name)?;
-        self.push_undo();
         let mut a = match info.template.as_ref().and_then(|t| typedjson::from_json(t).ok()) {
             Some(m @ Byml::Map(_)) => m,
             _ => {
@@ -414,7 +563,7 @@ impl Document {
     pub fn change_type(&mut self, cat: &Catalog, hash: u64, name: &str) -> Result<()> {
         let info = cat.data.actors.get(name).ok_or("unknown object type")?.clone();
         let Some(loc @ Loc::Actor(_)) = self.index.get(&hash).copied() else { return Err("select an object".into()) };
-        self.push_undo();
+        self.push_undo_as("Change Object");
         let keep: HashSet<&str> =
             cat.data.params.get(&info.banc_param).map(|v| v.iter().map(|p| p.name.as_str()).collect()).unwrap_or_default();
         let a = self.get_mut(loc).expect("indexed actor");
@@ -446,7 +595,7 @@ impl Document {
         if hashes.is_empty() {
             return vec![];
         }
-        self.push_undo();
+        self.push_undo_as("Duplicate");
         let mut out = vec![];
         for hash in hashes {
             // look up again: inserted points shift the ones after them
@@ -458,6 +607,7 @@ impl Document {
             }
             self.reindex();
         }
+        self.renumber_checkpoints();
         out
     }
 
@@ -549,7 +699,7 @@ impl Document {
         if locs.is_empty() {
             return "Nothing selected".into();
         }
-        self.push_undo();
+        self.push_undo_as("Delete");
         let mut dead: HashSet<u64> = HashSet::new();
         let mut retarget: HashMap<u64, u64> = HashMap::new();
         let mut rails_del: HashSet<usize> = locs.iter().filter_map(|l| if let Loc::Rail(r) = l { Some(*r) } else { None }).collect();
@@ -607,6 +757,7 @@ impl Document {
         self.deleted.extend(dead.iter().copied());
         let lost = self.remove_links_to(&dead, &retarget);
         self.reindex();
+        self.renumber_checkpoints();
         let mut msg = format!("Deleted {} item(s)", sel.len());
         if lost > 0 {
             msg += &format!("; removed {lost} link(s) that pointed at them");
@@ -619,19 +770,48 @@ impl Document {
 
     // ------------------------------------------------------------ paths
 
-    /// Insert a copy of a point after it: halfway to the next point, or one step past the end.
-    fn insert_point_raw(&mut self, hash: u64) -> Option<u64> {
+    /// Insert a copy of a point after it: halfway to the next point (on the curve, splitting
+    /// its Bézier handles so the path keeps its shape), or one step past the end.
+    pub(crate) fn insert_point_raw(&mut self, hash: u64) -> Option<u64> {
         let Some(Loc::Point(r, i)) = self.index.get(&hash).copied() else { return None };
         let nh = self.new_hash();
         let rail = &self.rails()[r];
         let pts = Self::points(rail);
         let closed = rail.get("IsClosed").and_then(|b| b.as_bool()).unwrap_or(false);
         let a = point_pos(&pts[i]);
-        let next = pts.get(i + 1).or(if closed && pts.len() > 1 { pts.first() } else { None });
-        let pos = match (next, i.checked_sub(1).and_then(|j| pts.get(j))) {
-            (Some(n), _) => (a + point_pos(n)) / 2.0,
+        let next_i = if i + 1 < pts.len() {
+            Some(i + 1)
+        } else if closed && pts.len() > 1 {
+            Some(0)
+        } else {
+            None
+        };
+        // a curved segment is split with de Casteljau at t = 0.5
+        let mut split: Option<CurveSplit> = None;
+        let pos = match (next_i, i.checked_sub(1).and_then(|j| pts.get(j))) {
+            (Some(j), _) => {
+                let b = point_pos(&pts[j]);
+                let (c1, c0) = (control(&pts[i], "Control1"), control(&pts[j], "Control0"));
+                if c1.is_some() || c0.is_some() {
+                    let (q1, q2) = (c1.unwrap_or(a), c0.unwrap_or(b));
+                    let (m0, m1, m2) = (a.lerp(q1, 0.5), q1.lerp(q2, 0.5), q2.lerp(b, 0.5));
+                    let (n0, n1) = (m0.lerp(m1, 0.5), m1.lerp(m2, 0.5));
+                    split = Some(CurveSplit {
+                        next: j,
+                        had_out: c1.is_some(),
+                        had_in: c0.is_some(),
+                        out_half: m0,
+                        in_half: m2,
+                        new_in: n0,
+                        new_out: n1,
+                    });
+                    n0.lerp(n1, 0.5)
+                } else {
+                    (a + b) / 2.0
+                }
+            }
             (None, Some(prev)) => a + (a - point_pos(prev)),
-            (None, None) => a + Vec3::new(0.0, 0.0, 10.0),
+            (None, None) => a + quat_zyx(pts[i].vec3("Rotate", [0.0; 3])) * Vec3::Z * 10.0,
         };
         let last = i == pts.len() - 1;
         let mut np = pts[i].clone();
@@ -647,7 +827,27 @@ impl Document {
             }
         }
         np.insert("Translation", Byml::floats(&pos.to_array()));
-        shift_controls(&mut np, pos - a);
+        match (split, next_i) {
+            (Some(CurveSplit { new_in: n0, new_out: n1, .. }), _) => {
+                np.insert("Control0", Byml::floats(&n0.to_array()));
+                np.insert("Control1", Byml::floats(&n1.to_array()));
+            }
+            // a straight segment stays straight
+            (None, Some(_)) => {
+                np.remove("Control0");
+                np.remove("Control1");
+            }
+            (None, None) => shift_controls(&mut np, pos - a),
+        }
+        if let Some(CurveSplit { next: j, had_out, had_in, out_half: m0, in_half: m2, .. }) = split {
+            let pts = Self::points_mut(&mut self.rails_mut()[r]);
+            if had_out {
+                pts[i].insert("Control1", Byml::floats(&m0.to_array()));
+            }
+            if had_in {
+                pts[j].insert("Control0", Byml::floats(&m2.to_array()));
+            }
+        }
         let pts = Self::points_mut(&mut self.rails_mut()[r]);
         np.remove("Links");
         if last {
@@ -660,6 +860,7 @@ impl Document {
         pts.insert(i + 1, np);
         self.copy_pad(hash, nh);
         self.reindex();
+        self.renumber_checkpoints();
         Some(nh)
     }
 
@@ -667,13 +868,13 @@ impl Document {
         if !matches!(self.index.get(&hash), Some(Loc::Point(..))) {
             return None;
         }
-        self.push_undo();
+        self.push_undo_as("Insert Point");
         self.insert_point_raw(hash)
     }
 
     /// Checkpoint rectangle (`RectSize`, `RectOffset`) for a new point of path type `name`:
     /// copied from a path of that type in this course, else a default by type.
-    fn rail_defaults(&self, name: &str) -> (Byml, Byml) {
+    pub(crate) fn rail_defaults(&self, name: &str) -> (Byml, Byml) {
         let existing = self.rails().iter().filter(|r| r.str_or("Name", "") == name).flat_map(Self::points).next();
         if let Some((s, o)) = existing.and_then(|p| p.get("RectSize").zip(p.get("RectOffset"))) {
             return (s.clone(), o.clone());
@@ -689,52 +890,9 @@ impl Document {
     }
 
     /// A new two-point path of type `name`, 20 m long, heading `yaw`. Returns its last point.
+    /// See [`new_rail_shaped`](Self::new_rail_shaped) for other shapes.
     pub fn new_rail(&mut self, cat: &Catalog, name: &str, start: Vec3, yaw: f32) -> Option<u64> {
-        let def = cat.data.rails.get(name)?.clone();
-        self.push_undo();
-        let rh = self.new_hash();
-        let (size, offset) = self.rail_defaults(name);
-        let dir = Vec3::new(yaw.sin(), 0.0, yaw.cos()) * 20.0;
-        let mut pts = vec![];
-        let mut last = 0;
-        for pos in [start, start + dir] {
-            let h = self.new_hash();
-            last = h;
-            let mut p = Byml::map();
-            p.insert("Gyaml", Byml::Str(def.gyaml.clone()));
-            p.insert("Hash", Byml::U64(h));
-            p.insert("InstanceId", Byml::Str(new_uuid()));
-            p.insert("Name", Byml::Str(format!("{name}.Node")));
-            p.insert("Parent", Byml::U64(rh));
-            p.insert("RectOffset", offset.clone());
-            p.insert("RectSize", size.clone());
-            p.insert("Rotate", Byml::floats(&[0.0, yaw, 0.0]));
-            p.insert("Translation", Byml::floats(&pos.to_array()));
-            pts.push(p);
-        }
-        let mut r = Byml::map();
-        r.insert("Gyaml", Byml::Str(def.gyaml));
-        r.insert("Hash", Byml::U64(rh));
-        r.insert("InstanceId", Byml::Str(new_uuid()));
-        r.insert("IsClosed", Byml::Bool(false));
-        r.insert("Name", Byml::Str(name.into()));
-        r.insert("Points", Byml::Array(pts));
-        // path data like the course's other paths of this type (RoutePathGraph has it)
-        let template = self
-            .rails()
-            .iter()
-            .filter(|r| r.str_or("Name", "") == name)
-            .flat_map(Self::points)
-            .map(hash_of)
-            .find(|h| matches!(&self.pad, Some(Byml::Hash64(m)) if m.contains_key(h)));
-        if let Some(t) = template {
-            for h in Self::points(&r).iter().map(hash_of).collect::<Vec<_>>() {
-                self.copy_pad(t, h);
-            }
-        }
-        self.rails_mut().push(r);
-        self.reindex();
-        Some(last)
+        self.new_rail_shaped(cat, name, start, yaw, crate::tools::RailShape::Line)
     }
 
     /// Link from an object or point to another (a path as the target means its first point).
@@ -748,14 +906,15 @@ impl Document {
             Some(_) => dst,
             None => return Err("target not found".into()),
         };
-        self.push_undo();
+        self.push_undo_as("Link");
         self.get_mut(sloc).expect("indexed source").array_mut("Links").push(link(src, dst, kind));
+        self.renumber_checkpoints();
         Ok(())
     }
 
     pub fn remove_link(&mut self, owner: u64, index: usize) {
         let Some(loc) = self.index.get(&owner).copied() else { return };
-        self.push_undo();
+        self.push_undo_as("Remove Link");
         let e = self.get_mut(loc).expect("indexed owner");
         if let Some(Byml::Array(ls)) = e.get_mut("Links") {
             if index < ls.len() {
@@ -765,13 +924,14 @@ impl Document {
                 e.remove("Links");
             }
         }
+        self.renumber_checkpoints();
     }
 
     /// Reverse a path: point order, curve handles, and each point's heading. Links at its
     /// ends are left as they were.
     pub fn reverse_rail(&mut self, hash: u64) {
         let Some(Loc::Rail(r)) = self.index.get(&hash).copied() else { return };
-        self.push_undo();
+        self.push_undo_as("Reverse Path");
         let pts = Self::points_mut(&mut self.rails_mut()[r]);
         pts.reverse();
         for p in pts.iter_mut() {
@@ -786,6 +946,7 @@ impl Document {
             p.insert("Rotate", Byml::floats(&euler_from_quat(q)));
         }
         self.reindex();
+        self.renumber_checkpoints();
     }
 
     /// Drop objects and points (a selected path means all its points) onto the surface
@@ -803,7 +964,7 @@ impl Document {
         if targets.is_empty() {
             return (0, 0);
         }
-        self.push_undo();
+        self.push_undo_as("Drop to Ground");
         let mut n = 0;
         for &loc in &targets {
             let is_actor = matches!(loc, Loc::Actor(_));

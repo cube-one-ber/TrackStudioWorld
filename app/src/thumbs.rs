@@ -4,7 +4,7 @@
 use crate::config::cache_dir;
 use glam::{Vec2, Vec3};
 use mkwtrack::catalog::Catalog;
-use mkwtrack::fbx;
+use mkwtrack::{bfres, bntx};
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -13,8 +13,10 @@ use std::sync::{Arc, Mutex};
 const SIZE: u32 = 128;
 const SS: u32 = 2;
 
+/// `Model/CmnObj_ItemBox000.CmnObj_ItemBox000_A.bfres.zs` -> `thumbs/CmnObj_ItemBox000.CmnObj_ItemBox000_A.png`
 pub fn thumb_path(model_rel: &str) -> PathBuf {
-    cache_dir().join("thumbs").join(format!("{}.png", model_rel.replace(['/', '\\'], "_").trim_end_matches(".fbx")))
+    let file = model_rel.rsplit('/').next().unwrap_or(model_rel);
+    cache_dir().join("thumbs").join(format!("{}.png", file.trim_end_matches(".zs").trim_end_matches(".bfres")))
 }
 
 /// Model files that still need a thumbnail.
@@ -29,17 +31,13 @@ struct Tex {
     px: Vec<[u8; 4]>,
 }
 
-fn load_tex(path: &Path) -> Option<Tex> {
-    let img = image::open(path).ok()?;
-    let img = if img.width() > 256 || img.height() > 256 { img.thumbnail(256, 256) } else { img };
-    let rgba = img.to_rgba8();
-    Some(Tex { w: rgba.width(), h: rgba.height(), px: rgba.pixels().map(|p| p.0).collect() })
+fn load_tex(romfs: &Path, name: &str) -> Option<Tex> {
+    let img = bntx::load(romfs, name, 256).ok()?;
+    Some(Tex { w: img.width, h: img.height, px: img.rgba.as_chunks::<4>().0.to_vec() })
 }
 
-pub fn render(models_dir: &Path, rel: &str) -> Result<(), String> {
-    let data = std::fs::read(models_dir.join(rel)).map_err(|e| e.to_string())?;
-    let model = fbx::load_model(&data).map_err(|e| e.to_string())?;
-    let dir = models_dir.join(rel).parent().unwrap().to_path_buf();
+pub fn render(romfs: &Path, rel: &str) -> Result<(), String> {
+    let model = bfres::load(romfs, rel).map_err(|e| e.to_string())?;
     let n = SIZE * SS;
     let mut color = vec![[0u8; 4]; (n * n) as usize];
     let mut depth = vec![f32::MAX; (n * n) as usize];
@@ -58,15 +56,7 @@ pub fn render(models_dir: &Path, rel: &str) -> Result<(), String> {
     };
     let mut textures: HashMap<String, Option<Tex>> = HashMap::new();
     for part in &model.parts {
-        let tex = part.texture.as_ref().and_then(|t| {
-            textures
-                .entry(t.clone())
-                .or_insert_with(|| {
-                    let p = dir.join(t);
-                    load_tex(&p).or_else(|| load_tex(&dir.join(format!("{}.png", t.rsplit_once('.').map(|x| x.0).unwrap_or(t)))))
-                })
-                .as_ref()
-        });
+        let tex = part.texture.as_ref().and_then(|t| textures.entry(t.clone()).or_insert_with(|| load_tex(romfs, t)).as_ref());
         let sp: Vec<Vec3> = part.positions.iter().map(|p| project(Vec3::from(*p))).collect();
         for t in part.indices.as_chunks::<3>().0 {
             let (i0, i1, i2) = (t[0] as usize, t[1] as usize, t[2] as usize);
@@ -101,7 +91,7 @@ pub fn render(models_dir: &Path, rel: &str) -> Result<(), String> {
                         let tu = ((u.x.rem_euclid(1.0)) * tx.w as f32) as u32 % tx.w;
                         let tv = ((u.y.rem_euclid(1.0)) * tx.h as f32) as u32 % tx.h;
                         base = tx.px[(tv * tx.w + tu) as usize];
-                        if part.cutout && base[3] < 115 {
+                        if part.cutout && (base[3] as f32) < part.alpha_cutoff * 255.0 {
                             continue;
                         }
                     }
@@ -142,7 +132,7 @@ pub fn render(models_dir: &Path, rel: &str) -> Result<(), String> {
     out.save(&path).map_err(|e| e.to_string())
 }
 
-pub fn render_all(models_dir: &Path, jobs: Vec<String>, progress: &(dyn Fn(usize) + Sync)) {
+pub fn render_all(romfs: &Path, jobs: Vec<String>, progress: &(dyn Fn(usize) + Sync)) {
     let queue = Arc::new(Mutex::new(jobs));
     let done = AtomicUsize::new(0);
     let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).saturating_sub(2).clamp(1, 8);
@@ -153,7 +143,7 @@ pub fn render_all(models_dir: &Path, jobs: Vec<String>, progress: &(dyn Fn(usize
             s.spawn(move || {
                 loop {
                     let Some(job) = queue.lock().unwrap().pop() else { break };
-                    if let Err(e) = render(models_dir, &job) {
+                    if let Err(e) = render(romfs, &job) {
                         eprintln!("thumbnail {job}: {e}");
                     }
                     let d = done.fetch_add(1, Ordering::Relaxed) + 1;

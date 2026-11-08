@@ -18,11 +18,12 @@ QQC2.ScrollView {
             // [keys, mouse action, what it does]. Keys: "Ctrl+Space" is a combination (drawn with +),
             // "W A S D" are separate keys.
             model: [
-                { title: "Camera", keys: [["W A S D", "", "Move"], ["Space", "", "Up"], ["Ctrl+Space", "", "Down"], ["Shift", "", "Move faster"], ["", "Right drag", "Look around"], ["", "Middle drag", "Pan"], ["", "Wheel", "Zoom to cursor"]] },
-                { title: "Selection", keys: [["", "Click", "Select"], ["Ctrl", "Click", "Add to selection"], ["F", "", "Focus selection"], ["Home", "", "Frame course"], ["Esc", "", "Cancel or deselect"]] },
-                { title: "Editing", keys: [["Alt", "Click", "Place current object"], ["Q", "", "Place at view centre"], ["1 2 3", "", "Move, rotate, scale"], ["Del", "", "Delete"], ["Ctrl+D", "", "Duplicate"], ["G", "", "Drop to ground"]] },
-                { title: "Paths", keys: [["I", "", "Insert point after"], ["L", "", "Link to next click"]] },
-                { title: "File", keys: [["Ctrl+O", "", "Open course"], ["Ctrl+S", "", "Save mod"], ["Ctrl+Z", "", "Undo"], ["Ctrl+Shift+Z", "", "Redo"]] }
+                { title: "Camera", keys: [["W A S D", "", "Move"], ["Space", "", "Up"], ["Ctrl+Space", "", "Down"], ["Shift", "", "Move faster"], ["", "Right drag", "Look around"], ["", "Middle drag", "Pan"], ["Alt", "Drag", "Orbit the selection"], ["", "Wheel", "Zoom to cursor"], ["Ctrl+T", "", "Top view on or off"]] },
+                { title: "Selection", keys: [["", "Click", "Select"], ["Ctrl", "Click", "Add or remove"], ["", "Drag", "Box select"], ["Ctrl", "Drag", "Add a box"], ["Ctrl+Shift", "Drag", "Remove a box"], ["Ctrl+A", "", "Select all"], ["H", "", "Hide selection"], ["Alt+H", "", "Show everything"], ["F", "", "Focus selection"], ["Home", "", "Frame course"], ["Esc", "", "Cancel or deselect"]] },
+                { title: "Transform", keys: [["1 2 3", "", "Gizmo: move, rotate, scale"], ["G R T", "", "Move, rotate, scale with the mouse"], ["X Y Z", "", "Lock to an axis (during G, R, T)"], ["Ctrl", "Drag", "Snap (or not) for this drag"], ["End", "", "Drop to ground"]] },
+                { title: "Editing", keys: [["Alt", "Click", "Place current object"], ["Q", "", "Place at view centre"], ["Del", "", "Delete"], ["Ctrl+D", "", "Duplicate"], ["Ctrl+C", "", "Copy"], ["Ctrl+X", "", "Cut"], ["Ctrl+V", "", "Paste at view centre"], ["Ctrl+Shift+V", "", "Paste in place"], ["L", "", "Link to next click"]] },
+                { title: "Paths", keys: [["Alt", "Click", "Add a point after the selected one"], ["E", "", "Extrude a point and move it"], ["I", "", "Insert point after"], ["C", "", "Connect or disconnect 2 points"], ["Ctrl+J", "", "Join 2 paths"], ["O", "", "Orient points along the path"], ["Ctrl", "Drag handle", "Keep both curve handles in line"]] },
+                { title: "File", keys: [["Ctrl+O", "", "Open course"], ["Ctrl+S", "", "Save mod"], ["F5", "", "Save and test"], ["Ctrl+Z", "", "Undo"], ["Ctrl+Shift+Z", "", "Redo"]] }
             ]
             delegate: ColumnLayout {
                 id: group

@@ -11,6 +11,7 @@ ColumnLayout {
     id: ol
     required property Editor editor
     signal openRequested()
+    signal focusRequested()
     property var rows: []
     property string revealed: ""
     spacing: 0
@@ -164,7 +165,8 @@ ColumnLayout {
                             Layout.rightMargin: Kirigami.Units.smallSpacing
                         }
                     }
-                    QQC2.ToolTip.text: row.isGroup && !row.isRail ? row.modelData.name + (row.modelData.sub ? "\n" + row.modelData.sub : "") + "\n" + row.modelData.category : ""
+                    QQC2.ToolTip.text: row.isGroup && !row.isRail ? row.modelData.name + (row.modelData.sub ? "\n" + row.modelData.sub : "") + "\n" + row.modelData.category
+                        : row.isItem && row.modelData.tip ? row.modelData.tip : ""
                     QQC2.ToolTip.visible: hovered && QQC2.ToolTip.text.length > 0
                     QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
                     onClicked: {
@@ -176,25 +178,64 @@ ColumnLayout {
                         else
                             ol.editor.selectHash(modelData.hash, additive);
                     }
-                    onDoubleClicked: if (isGroup) ol.editor.toggleExpand(modelData.key)
+                    onDoubleClicked: {
+                        if (isGroup)
+                            ol.editor.toggleExpand(modelData.key);
+                        else if (isItem)
+                            ol.focusRequested();
+                    }
+                    // right click: select (unless already selected), then a menu
+                    TapHandler {
+                        acceptedButtons: Qt.RightButton
+                        onTapped: {
+                            if (row.isSection)
+                                return;
+                            if (!row.modelData.selected || row.isGroup) {
+                                if (row.isGroup && row.modelData.key.startsWith("a:"))
+                                    ol.editor.selectGroup(row.modelData.key);
+                                else
+                                    ol.editor.selectHash(row.modelData.hash, false);
+                            }
+                            rowMenu.popup();
+                        }
+                    }
+                    QQC2.Menu {
+                        id: rowMenu
+                        QQC2.MenuItem { text: "Focus"; icon.name: "crosshairs"; onTriggered: ol.focusRequested() }
+                        QQC2.MenuItem {
+                            visible: row.isGroup
+                            height: visible ? implicitHeight : 0
+                            text: row.modelData.visible !== false ? "Hide in Viewport" : "Show in Viewport"
+                            icon.name: row.modelData.visible !== false ? "view-hidden" : "view-visible"
+                            onTriggered: ol.editor.setGroupVisible(row.modelData.key, row.modelData.visible === false)
+                        }
+                        QQC2.MenuItem { visible: !row.isGroup; height: visible ? implicitHeight : 0; text: "Hide"; icon.name: "view-hidden"; onTriggered: ol.editor.hideSelected() }
+                        QQC2.MenuItem { visible: row.isGroup; height: visible ? implicitHeight : 0; text: row.modelData.expanded ? "Collapse" : "Expand"; icon.name: "view-list-tree"; onTriggered: ol.editor.toggleExpand(row.modelData.key) }
+                        QQC2.MenuSeparator {}
+                        QQC2.MenuItem { text: "Copy"; icon.name: "edit-copy"; onTriggered: ol.editor.copySelection(false) }
+                        QQC2.MenuItem { text: "Delete"; icon.name: "edit-delete"; onTriggered: ol.editor.deleteSelected() }
+                    }
                 }
             }
         }
 
+        // no course: one dim line (the viewport holds the Open Course button)
+        QQC2.Label {
+            anchors.centerIn: parent
+            width: parent.width - Kirigami.Units.gridUnit * 2
+            visible: ol.editor.courseTitle.length === 0
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.Wrap
+            color: Kirigami.Theme.disabledTextColor
+            text: "The course's objects and paths appear here."
+        }
         Kirigami.PlaceholderMessage {
             anchors.centerIn: parent
             width: parent.width - Kirigami.Units.gridUnit * 2
-            visible: ol.editor.courseTitle.length === 0 || ol.rows.length <= 2 && search.text.length > 0
-            icon.name: ol.editor.courseTitle.length === 0 ? "document-open" : "edit-find"
-            text: ol.editor.courseTitle.length === 0 ? "No course open" : "No matches"
-            explanation: ol.editor.courseTitle.length === 0 ? "Objects and paths appear here." : "Nothing is named \"" + search.text + "\"."
-            helpfulAction: ol.editor.courseTitle.length === 0 && ol.editor.ready ? openHelp : null
-            Kirigami.Action {
-                id: openHelp
-                text: "Open Course…"
-                icon.name: "document-open"
-                onTriggered: ol.openRequested()
-            }
+            visible: ol.editor.courseTitle.length > 0 && ol.rows.length <= 2 && search.text.length > 0
+            icon.name: "edit-find"
+            text: "No matches"
+            explanation: "Nothing is named \"" + search.text + "\"."
         }
     }
 }

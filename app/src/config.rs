@@ -8,7 +8,6 @@ pub const USAGE: &str = "\
 usage: trackstudioworld [options]
 
   --romfs DIR       the game's extracted romfs (with Banc/, RSDB/, System/)
-  --models DIR      Switch Toolbox FBX exports of the game's models (output/Models)
   --mods DIR        where mods are saved (default ~/MKW-Mods)
   --ns2jb DIR       Switch 2 SD card (or a folder to copy onto it): export there on every save
   --open FILE       open a course at start, e.g. \"Banc/Race_FirstCircuit_A_00[Game03].bcett.byml.zs\"
@@ -37,7 +36,6 @@ const QT_OPTIONS_WITH_VALUE: [&str; 11] = [
 #[derive(Clone, Debug, Default)]
 pub struct Config {
     pub romfs: PathBuf,
-    pub models: PathBuf,
     pub mods: PathBuf,
     /// Switch 2 SD card (or a folder copied to it) for ns2jb-modloader exports
     pub ns2jb: PathBuf,
@@ -137,7 +135,6 @@ impl Config {
         if let Some(v) = v {
             let p = |k: &str| v.get(k).and_then(|x| x.as_str()).map(PathBuf::from).unwrap_or_default();
             c.romfs = p("romfs");
-            c.models = p("models");
             c.mods = p("mods");
             c.ns2jb = p("ns2jb");
             c.ns2jb_on_save = v.get("ns2jbOnSave").and_then(|x| x.as_bool()).unwrap_or(false);
@@ -154,8 +151,12 @@ impl Config {
             let mut value = || args.next().ok_or_else(|| format!("{a} needs a value"));
             match a.as_str() {
                 "--romfs" => self.romfs = expand(&value()?),
-                "--models" => self.models = expand(&value()?),
                 "--mods" => self.mods = expand(&value()?),
+                // models used to come from a separate FBX export; they are read from the romfs now
+                "--models" => {
+                    value()?;
+                    eprintln!("trackstudioworld: --models is no longer needed (models are read from the romfs); ignored");
+                }
                 "--ns2jb" => {
                     self.ns2jb = expand(&value()?);
                     self.ns2jb_on_save = true;
@@ -184,8 +185,7 @@ impl Config {
 
     pub fn save(&self) -> Result<(), String> {
         let f = config_file();
-        let v =
-            json!({"romfs": self.romfs, "models": self.models, "mods": self.mods, "ns2jb": self.ns2jb, "ns2jbOnSave": self.ns2jb_on_save});
+        let v = json!({"romfs": self.romfs, "mods": self.mods, "ns2jb": self.ns2jb, "ns2jbOnSave": self.ns2jb_on_save});
         let text = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
         mkwtrack::io::write_atomic(&f, text.as_bytes()).map_err(|e| e.to_string())
     }
@@ -193,9 +193,6 @@ impl Config {
     pub fn valid(&self) -> Result<(), String> {
         if !self.romfs.join("Banc").is_dir() {
             return Err(format!("{} has no Banc folder: set the romfs folder in Settings", self.romfs.display()));
-        }
-        if !self.models.is_dir() {
-            return Err(format!("{} is not a folder: set the exported models folder in Settings", self.models.display()));
         }
         Ok(())
     }

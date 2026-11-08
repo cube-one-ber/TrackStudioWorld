@@ -77,9 +77,10 @@ fn count_by_name(items: &[Byml]) -> Byml {
     Byml::Map(m)
 }
 
-/// Rebuild `CountActor`, `CountRail` and `Collects`, and grow `AABB` over new or moved actors
-/// (`original` is the shipped file, to tell which actors moved). Returns notes for the save
-/// report. On an unedited shipped file this changes nothing.
+/// Rebuild `CountActor`, `CountRail` and `Collects`, grow `AABB` over new or moved actors
+/// (`original` is the shipped file, to tell which actors moved) and renumber the lap
+/// checkpoints. Returns notes for the save report. On an unedited shipped file this changes
+/// nothing.
 pub fn recompute(doc: &mut Byml, original: Option<&Byml>, cat: Option<&Catalog>) -> Vec<String> {
     let mut notes = vec![];
     let actors = doc.array("Actors").to_vec();
@@ -111,6 +112,10 @@ pub fn recompute(doc: &mut Byml, original: Option<&Byml>, cat: Option<&Catalog>)
     }
     if let Some(note) = grow_aabb(doc, original, &actors) {
         notes.push(note);
+    }
+    match crate::checkpoints::renumber(doc) {
+        0 => {}
+        n => notes.push(format!("Renumbered {n} lap checkpoint(s) so they count up along the lap")),
     }
     notes
 }

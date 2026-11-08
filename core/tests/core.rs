@@ -1,5 +1,5 @@
-//! Checks against the real game files. They need your own dump: set MKW_ROMFS (and MKW_MODELS
-//! for the catalog) to absolute paths. Without them each test prints why it skipped and passes.
+//! Checks against the real game files. They need your own dump: set MKW_ROMFS to an absolute
+//! path. Without them each test prints why it skipped and passes.
 
 mod common;
 
@@ -104,4 +104,48 @@ fn route_points_have_path_data() {
     // 1.8.0: 227,255 with, 855 without (in 14 files), none on other path types
     assert!(with * 100 > (with + without) * 99, "most route points have path data");
     assert_eq!(other, 0, "only route points have path data");
+}
+
+#[test]
+fn check_shipped_courses() {
+    // The Problems panel's warnings describe what no shipped course does, so the shipped courses
+    // must give none (src/check.rs).
+    let Some((romfs, cat)) = catalog() else { return };
+    let docs = cat::parse_all(&romfs, &cat::banc_files(&romfs));
+    let mut warned = vec![];
+    for (rel, doc) in &docs {
+        for p in mkwtrack::check::check(doc.as_ref().unwrap(), rel, Some(&cat)) {
+            assert_ne!(p.severity, mkwtrack::check::Severity::Error, "{rel}: {}", p.message);
+            if p.severity == mkwtrack::check::Severity::Warning {
+                warned.push(format!("{rel}: {}", p.message));
+            }
+        }
+    }
+    println!("{} courses checked; warnings:\n{}", docs.len(), warned.join("\n"));
+    assert!(warned.is_empty(), "{warned:#?}");
+}
+
+#[test]
+fn shipped_checkpoints_keep_their_numbers() {
+    // the numbering rule (src/checkpoints.rs) reproduces every shipped CheckPoint, so renumbering
+    // leaves every shipped file as it is
+    let Some(romfs) = romfs() else { return };
+    let (mut files, mut cps) = (0, 0);
+    for rel in common::all_byml(&romfs).iter().filter(|f| f.ends_with(".bcett.byml.zs")) {
+        let (mut root, _) = byml::from_bytes(&read_file(&romfs.join(rel)).unwrap()).unwrap();
+        let n = mkwtrack::checkpoints::numbers(root.array("Rails")).len();
+        let total = root
+            .array("Rails")
+            .iter()
+            .filter(|r| r.str_or("Name", "") == mkwtrack::checkpoints::LAP)
+            .flat_map(|r| r.array("Points"))
+            .filter(|p| mkwtrack::checkpoints::is_checkpoint(p))
+            .count();
+        assert_eq!(n, total, "{rel}: every checkpoint has a number");
+        assert_eq!(mkwtrack::checkpoints::renumber(&mut root), 0, "{rel}: renumbering changed it");
+        files += (total > 0) as usize;
+        cps += total;
+    }
+    println!("{cps} checkpoints in {files} files keep their numbers");
+    assert!(cps > 5000, "only {cps} checkpoints found");
 }

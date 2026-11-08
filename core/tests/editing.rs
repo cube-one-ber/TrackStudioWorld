@@ -1,9 +1,9 @@
 //! End-to-end editing on Mario Bros. Circuit: every operation, save as a mod, then check the
-//! written files independently. Needs MKW_ROMFS and MKW_MODELS (absolute paths).
+//! written files independently. Needs MKW_ROMFS (an absolute path).
 
 mod common;
 
-use glam::Vec3;
+use glam::{Quat, Vec3};
 use mkwtrack::banc::hash_of;
 use mkwtrack::byml::{self, Byml, vec3};
 use mkwtrack::catalog::Catalog;
@@ -361,5 +361,159 @@ fn ns2jb_export_merges_into_the_sd_layout() {
     }
     check(&mut ok, !ws.export_ns2jb("NotSaved", &sd).ok, "exporting an unsaved mod is refused");
     std::fs::remove_dir_all(&tmp).ok();
+    assert!(ok);
+}
+
+#[test]
+fn path_tools_on_a_shipped_course() {
+    let Some(e) = env() else { return };
+    let mods = std::env::temp_dir().join(format!("mkwtrack-tools-{}", std::process::id()));
+    let ws = Workspace { romfs: e.romfs.clone(), mods_root: mods.clone() };
+    let mut doc = Document::new(ws.load(FILE, None).unwrap());
+    let bvh = stage_bvh(&e);
+    let mut ok = true;
+
+    // Orient Points Along Path reproduces how the shipped lap and route points face: along the
+    // path, upright on the road
+    let lap_route: Vec<u64> =
+        doc.rails().iter().filter(|r| ["LapPathGraph", "RoutePathGraph"].contains(&r.str_or("Name", ""))).map(hash_of).collect();
+    let before: HashMap<u64, Quat> = doc.movable(&lap_route).into_iter().map(|(h, _, q, _)| (h, q)).collect();
+    let n = doc.orient_points(&lap_route, &|p| bvh.normal_below(p));
+    let mut fwd: Vec<f32> = vec![];
+    let mut up: Vec<f32> = vec![];
+    for (h, q0) in &before {
+        let q = doc.transform(*h).unwrap().1;
+        fwd.push((q0 * Vec3::Z).angle_between(q * Vec3::Z).to_degrees());
+        up.push((q0 * Vec3::Y).angle_between(q * Vec3::Y).to_degrees());
+    }
+    fwd.sort_by(f32::total_cmp);
+    up.sort_by(f32::total_cmp);
+    let (fm, um) = (fwd[fwd.len() / 2], up[up.len() / 2]);
+    println!("oriented {n} points: heading differs from the shipped one by {fm:.1}° (median), up by {um:.1}°");
+    check(&mut ok, n == before.len() && fm < 5.0 && um < 3.0, "orienting shipped points keeps them as Nintendo placed them");
+    doc.undo();
+
+    // split a lap path, join it back: the same points in the same order
+    let lap = doc.rails().iter().find(|r| r.str_or("Name", "") == "LapPathGraph").unwrap().clone();
+    let pts: Vec<u64> = Document::points(&lap).iter().map(hash_of).collect();
+    doc.split_rail(pts[10]).unwrap();
+    let tail = doc.rail_hash_of(pts[11]).unwrap();
+    check(&mut ok, tail != hash_of(&lap), "split makes a new path");
+    doc.join_rails(pts[11], pts[10]).unwrap();
+    let back = doc.find(hash_of(&lap)).unwrap().1;
+    check(&mut ok, Document::points(back).iter().map(hash_of).collect::<Vec<_>>() == pts, "join puts the points back in order");
+
+    // copy the whole lap graph and paste it 50 m up: links between copies follow the copies
+    let lap_rails: Vec<u64> = doc.rails().iter().filter(|r| r.str_or("Name", "") == "LapPathGraph").map(hash_of).collect();
+    let clip = doc.copy(&lap_rails);
+    let new = doc.paste(&clip, Vec3::Y * 50.0);
+    let new_points: HashSet<u64> =
+        doc.point_targets(&new).into_iter().map(|(r, i)| hash_of(&Document::points(&doc.rails()[r])[i])).collect();
+    let links_inside = new_points
+        .iter()
+        .flat_map(|h| doc.find(*h).unwrap().1.array("Links").to_vec())
+        .filter(|l| l.str_or("Name", "") == "BasicSignal")
+        .all(|l| new_points.contains(&l.u64_of("Dst").unwrap()));
+    check(&mut ok, new.len() == lap_rails.len() && links_inside, "a pasted lap graph links only to itself");
+
+    // draw onto the copy, place coins along it, save: the mod validates and counts them
+    let end = hash_of(Document::points(doc.find(new[0]).unwrap().1).last().unwrap());
+    let to = doc.extrude_target(end).unwrap();
+    check(&mut ok, doc.add_point_at(end, to).is_some(), "extending a pasted path");
+    let coins = doc.place_along(&e.cat, new[0], "CmnObj_Coin000_A_00", 10.0, &|p| bvh.ground_below(p));
+    check(&mut ok, coins.len() > 10, &format!("placed {} coins along the path", coins.len()));
+    let res = ws.save(&doc.file, &doc.root, doc.pad.as_ref(), "ToolsTest", &doc.deleted, Some(&e.cat));
+    check(&mut ok, res.ok, &format!("saved: {:?}", res.errors));
+    let saved = byml::from_bytes(&read_file(&res.mod_romfs.join(FILE)).unwrap()).unwrap().0;
+    let coins_counted = saved.get("CountActor").and_then(|c| c.get("CmnObj_Coin000_A_00")).and_then(|v| v.as_f64()).unwrap_or(0.0) as usize;
+    let coins_there = saved.array("Actors").iter().filter(|a| a.str_or("Name", "") == "CmnObj_Coin000_A_00").count();
+    check(&mut ok, coins_counted == coins_there, "CountActor counts the placed coins");
+    let problems = mkwtrack::check::check(&saved, FILE, Some(&e.cat));
+    check(&mut ok, problems.iter().all(|p| p.severity != mkwtrack::check::Severity::Error), "no errors after the edits");
+    let _ = std::fs::remove_dir_all(&mods);
+    assert!(ok);
+}
+
+/// The lap checkpoints of a document, in path order: (hash, number).
+fn checkpoints(doc: &Document) -> Vec<(u64, f64)> {
+    doc.rails()
+        .iter()
+        .filter(|r| r.str_or("Name", "") == "LapPathGraph")
+        .flat_map(Document::points)
+        .filter_map(|p| p.get("Dynamic").and_then(|d| d.get("CheckPoint")).and_then(|v| v.as_f64()).map(|v| (hash_of(p), v)))
+        .collect()
+}
+
+#[test]
+fn checkpoints_follow_edits() {
+    // Mario Bros. Circuit: one start, checkpoints 1 to 7 on the main lap path, 8 and 9 on the
+    // two short paths that close the loop
+    let Some(e) = env() else { return };
+    let mods = std::env::temp_dir().join(format!("mkwtrack-cp-{}", std::process::id()));
+    let ws = Workspace { romfs: e.romfs.clone(), mods_root: mods.clone() };
+    let mut doc = Document::new(ws.load(FILE, None).unwrap());
+    let shipped = checkpoints(&doc);
+    let mut ok = true;
+    let counts_up = |cps: &[(u64, f64)]| {
+        let mut v: Vec<f64> = cps.iter().map(|c| c.1).collect();
+        v.sort_by(f64::total_cmp);
+        v == (1..=cps.len()).map(|n| n as f64).collect::<Vec<_>>()
+    };
+    check(
+        &mut ok,
+        shipped.len() == 9 && counts_up(&shipped),
+        &format!("shipped checkpoints 1 to 9: {:?}", shipped.iter().map(|c| c.1).collect::<Vec<_>>()),
+    );
+    check(&mut ok, doc.renumber_checkpoints() == 0, "a shipped course needs no renumbering");
+    let number = |doc: &Document, h: u64| checkpoints(doc).into_iter().find(|c| c.0 == h).map(|c| c.1);
+
+    // delete checkpoint 2: the ones after it move down
+    doc.delete(&[shipped[1].0]);
+    let cps = checkpoints(&doc);
+    check(&mut ok, cps.len() == 8 && counts_up(&cps), "deleting checkpoint 2 leaves 1 to 8");
+    check(&mut ok, number(&doc, shipped[2].0) == Some(2.0), "the old checkpoint 3 is now 2");
+
+    // make a plain point between checkpoints 1 and 2 a checkpoint: the rest move up
+    let lap = doc.rails().iter().find(|r| Document::points(r).iter().any(|p| hash_of(p) == shipped[0].0)).unwrap();
+    let lap_hash = hash_of(lap);
+    let i = Document::points(lap).iter().position(|p| hash_of(p) == shipped[0].0).unwrap();
+    let plain = hash_of(&Document::points(lap)[i + 2]);
+    doc.set_dynamic(plain, "CheckPoint", Some(Byml::F32(0.0)));
+    check(
+        &mut ok,
+        number(&doc, plain) == Some(2.0) && number(&doc, shipped[2].0) == Some(3.0),
+        "a new checkpoint takes its place in the count",
+    );
+    check(&mut ok, counts_up(&checkpoints(&doc)), "still 1 to 9");
+
+    // split the main path and join it again: the lap graph is the same, so are the numbers
+    let sorted = |mut v: Vec<(u64, f64)>| {
+        v.sort_by_key(|c| c.0);
+        v
+    };
+    let before = sorted(checkpoints(&doc));
+    let at = hash_of(&Document::points(doc.rails().iter().find(|r| hash_of(r) == lap_hash).unwrap())[12]);
+    doc.split_rail(at).unwrap();
+    check(&mut ok, sorted(checkpoints(&doc)) == before, "splitting a lap path keeps the numbers");
+
+    // a lap check after checkpoint 3 starts the count again
+    let after3 = doc.find(shipped[2].0).map(|(loc, _)| loc).unwrap();
+    let mkwtrack::doc::Loc::Point(r, i) = after3 else { panic!() };
+    let next = hash_of(&Document::points(&doc.rails()[r])[i + 1]);
+    doc.set_dynamic(next, "IsLapCheck", Some(Byml::Bool(true)));
+    check(&mut ok, number(&doc, shipped[3].0) == Some(1.0), "a lap check restarts the count");
+
+    // saving writes the numbers; undo goes all the way back to the shipped ones
+    let res = ws.save(&doc.file, &doc.root, doc.pad.as_ref(), "CheckpointTest", &doc.deleted, Some(&e.cat));
+    check(
+        &mut ok,
+        res.ok && !res.notes.iter().any(|n| n.contains("checkpoint")),
+        &format!("saved without renumbering: {:?} {:?}", res.errors, res.notes),
+    );
+    let saved = byml::from_bytes(&read_file(&res.mod_romfs.join(FILE)).unwrap()).unwrap().0;
+    check(&mut ok, mkwtrack::checkpoints::misnumbered(saved.array("Rails")).is_empty(), "the saved file is numbered in order");
+    while doc.undo() {}
+    check(&mut ok, checkpoints(&doc) == shipped, "undo restores the shipped numbers");
+    let _ = std::fs::remove_dir_all(&mods);
     assert!(ok);
 }

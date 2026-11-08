@@ -16,17 +16,17 @@ saving a mod into a temporary folder. CI runs them on every push.
 ## 2. The shipped files
 
 ```sh
-MKW_ROMFS=/abs/path/romfs MKW_MODELS=/abs/path/Models cargo test --release -p mkwtrack
+MKW_ROMFS=/abs/path/romfs cargo test --release -p mkwtrack
 ```
 
-Paths must be absolute (cargo runs tests from `core/`). Without the variables these tests
+The path must be absolute (cargo runs tests from `core/`). Without the variable these tests
 print that they skipped.
 
 | Test | Checks |
 |---|---|
-| `core.rs` | Every BYML file under `Banc/` rewrites byte-identically (1,305 of 1,311; the 6 `Banc/PathByml` files come from another writer and read back identically); typed JSON round trips; rebuilding the summaries changes no shipped course; every shipped course passes the save checks; the size-table formula matches every entry and the table rewrites identically; route points have path data (99.6%) and no other point does |
-| `editing.rs` | Edit sessions on Mario Bros. Circuit: move, duplicate, delete, add, drop to ground on the real stage mesh, insert and delete points (with links into a deleted point retargeted), new path, link, undo and redo, reversing twice; saving and re-reading with the summaries, path-data pruning and unique hashes; size-table growth; refusing duplicate hashes, unsafe paths and bad mod names; the ns2jb-modloader export |
-| `models.rs` | Every FBX export parses, and a stage's bounds match the game's ActorInfo |
+| `core.rs` | Every BYML file under `Banc/` rewrites byte-identically (1,305 of 1,311; the 6 `Banc/PathByml` files come from another writer and read back identically); typed JSON round trips; rebuilding the summaries changes no shipped course; every shipped course passes the save checks; the size-table formula matches every entry and the table rewrites identically; route points have path data (99.6%) and no other point does; no shipped course gives a Problems-panel warning |
+| `editing.rs` | Edit sessions on Mario Bros. Circuit: move, duplicate, delete, add, drop to ground on the real stage mesh, insert and delete points (with links into a deleted point retargeted), new path, link, undo and redo, reversing twice; saving and re-reading with the summaries, path-data pruning and unique hashes; size-table growth; refusing duplicate hashes, unsafe paths and bad mod names; the ns2jb-modloader export; the path tools: orienting the shipped lap and route points reproduces them (median 3.3° heading, 0.7° up), split then join restores a lap path, a pasted lap graph links only to itself, and extending, placing coins and saving give a valid mod |
+| `models.rs` | Every model under `Model/` parses (5,827 files; the 1,024 `.anim.bfres` files hold no geometry); Mario Bros. Circuit's stage bounds match its ActorInfo; the item box gets its albedo texture; every albedo texture a model uses decodes (6,457) |
 
 ## 3. In game: `mkw-emutest`
 
@@ -42,7 +42,6 @@ You need:
 - an Eden-based emulator that runs the game, such as the PokeDinner AppImage, extracted with
   `--appimage-extract` (the harness runs `squashfs-root/usr/bin/eden-cli`);
 - Xvfb;
-- optionally the FBX models, so new objects are dropped onto the stage surface;
 - optionally an emulator data folder from a profile that has played the game, to copy system
   and save data from (see below).
 
@@ -51,7 +50,6 @@ cargo build --release -p mkw-emutest
 target/release/mkw-emutest \
   --dump /path/to/dump --keys /path/to/prod.keys \
   --eden /path/to/squashfs-root/usr/bin/eden-cli \
-  --models /path/to/Models \
   --profile-template ~/.local/share/eden \
   --out emutest-out
 ```

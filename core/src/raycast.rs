@@ -169,6 +169,47 @@ impl Bvh {
         }
         None
     }
+
+    /// Normal (facing up) of the first surface below `p`, searched like [`ground_below`](Self::ground_below).
+    pub fn normal_below(&self, p: Vec3) -> Option<Vec3> {
+        for lift in [3.0, 40.0, 400.0] {
+            let r = Ray { origin: p + Vec3::Y * lift, dir: Vec3::NEG_Y };
+            if let Some((_, n)) = self.hit(&r, 5000.0) {
+                return Some(n);
+            }
+        }
+        None
+    }
+}
+
+/// The region a rectangle on screen covers, from the rays through its four corners (in order
+/// around it): a pyramid for a perspective camera, a box for an orthographic one.
+pub struct Frustum {
+    planes: [(Vec3, Vec3); 4],
+    origin: Vec3,
+    forward: Vec3,
+}
+
+impl Frustum {
+    pub fn from_rays(c: &[Ray; 4]) -> Frustum {
+        let origin = c.iter().map(|r| r.origin).sum::<Vec3>() / 4.0;
+        let forward = c.iter().map(|r| r.dir).sum::<Vec3>().normalize_or(Vec3::NEG_Z);
+        let inside = origin + forward * 50.0;
+        let planes = [0, 1, 2, 3].map(|i| {
+            let (a, b) = (&c[i], &c[(i + 1) % 4]);
+            let (p0, p1, p2) = (a.origin, a.origin + a.dir * 100.0, b.origin + b.dir * 100.0);
+            let mut n = (p1 - p0).cross(p2 - p0).normalize_or_zero();
+            if n.dot(inside - p0) < 0.0 {
+                n = -n;
+            }
+            (p0, n)
+        });
+        Frustum { planes, origin, forward }
+    }
+
+    pub fn contains(&self, p: Vec3) -> bool {
+        self.forward.dot(p - self.origin) > 0.0 && self.planes.iter().all(|(o, n)| n.dot(p - *o) >= 0.0)
+    }
 }
 
 /// Ray against an oriented box: `world` maps the unit-free local box [min, max] to world.
@@ -224,4 +265,25 @@ pub fn ray_plane(r: &Ray, p: Vec3, n: Vec3) -> Option<Vec3> {
     }
     let t = n.dot(p - r.origin) / denom;
     (t > 0.0).then(|| r.origin + r.dir * t)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frustum_from_corner_rays() {
+        // a camera at the origin looking down -Z, a box over the middle of the screen
+        let o = Vec3::ZERO;
+        let rays =
+            [(-1.0, 1.0), (1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)].map(|(x, y)| Ray { origin: o, dir: Vec3::new(x, y, -4.0).normalize() });
+        let f = Frustum::from_rays(&rays);
+        assert!(f.contains(Vec3::new(0.0, 0.0, -10.0)) && f.contains(Vec3::new(2.0, -2.0, -10.0)));
+        assert!(!f.contains(Vec3::new(3.0, 0.0, -10.0)) && !f.contains(Vec3::new(0.0, 0.0, 10.0)), "outside, and behind");
+        // orthographic: parallel rays from different origins
+        let rays =
+            [(-1.0, 1.0), (1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)].map(|(x, z)| Ray { origin: Vec3::new(x, 100.0, z), dir: Vec3::NEG_Y });
+        let f = Frustum::from_rays(&rays);
+        assert!(f.contains(Vec3::new(0.5, 0.0, -0.5)) && !f.contains(Vec3::new(1.5, 0.0, 0.0)));
+    }
 }

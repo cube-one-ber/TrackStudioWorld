@@ -13,6 +13,10 @@ QQC2.Control {
     property int currentTab: 0
     default property alias content: body.data
     property alias headerTools: tools.data
+    // a collapsible panel folds to its title bar when the title bar is clicked
+    property bool collapsible: false
+    property bool collapsed: false
+    readonly property real headerHeight: header.implicitHeight
 
     padding: 0
     Kirigami.Theme.colorSet: Kirigami.Theme.View
@@ -27,6 +31,7 @@ QQC2.Control {
         spacing: 0
 
         Rectangle {
+            id: header
             Layout.fillWidth: true
             implicitHeight: Kirigami.Units.gridUnit * 1.6
             Kirigami.Theme.colorSet: Kirigami.Theme.Header
@@ -39,6 +44,12 @@ QQC2.Control {
                 anchors.rightMargin: Kirigami.Units.smallSpacing
                 spacing: Kirigami.Units.smallSpacing
 
+                Kirigami.Icon {
+                    visible: panel.collapsible
+                    source: panel.collapsed ? "arrow-right" : "arrow-down"
+                    implicitWidth: Kirigami.Units.iconSizes.small
+                    implicitHeight: Kirigami.Units.iconSizes.small
+                }
                 Kirigami.Icon {
                     source: panel.iconName
                     visible: panel.iconName.length > 0 && panel.tabs.length === 0
@@ -75,10 +86,19 @@ QQC2.Control {
                 anchors.bottom: parent.bottom
                 width: parent.width
             }
+            TapHandler {
+                enabled: panel.collapsible
+                onTapped: panel.collapsed = !panel.collapsed
+            }
+            HoverHandler {
+                enabled: panel.collapsible
+                cursorShape: Qt.PointingHandCursor
+            }
         }
 
         Item {
             id: body
+            visible: !panel.collapsed
             Layout.fillWidth: true
             Layout.fillHeight: true
             clip: true

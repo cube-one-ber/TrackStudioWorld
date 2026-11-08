@@ -8,19 +8,24 @@ import TrackStudioWorld
 
 Kirigami.Dialog {
     id: dlg
+    // dim the editor behind the dialog (set here: the default fade did not always end dimmed)
+    QQC2.Overlay.modal: Rectangle {
+        color: Qt.rgba(0, 0, 0, 0.45)
+    }
     required property Editor editor
+    // called with the open as a function, to ask about unsaved changes first
+    property var guard: null
     title: "Open Course"
     preferredWidth: Kirigami.Units.gridUnit * 46
     preferredHeight: Kirigami.Units.gridUnit * 34
     padding: Kirigami.Units.smallSpacing
-    standardButtons: Kirigami.Dialog.Open | Kirigami.Dialog.Cancel
     onAccepted: dlg.openCurrent()
-    Component.onCompleted: {
-        const open = standardButton(Kirigami.Dialog.Open);
-        if (open) {
-            open.highlighted = true;  // the default (Enter) action
-            open.enabled = Qt.binding(() => list.currentIndex >= 0);
-        }
+    footer: DialogFooter {
+        acceptText: "Open"
+        acceptIcon: "document-open"
+        acceptEnabled: list.currentIndex >= 0
+        onAccepted: dlg.accept()
+        onRejected: dlg.reject()
     }
     property var files: []
 
@@ -39,7 +44,12 @@ Kirigami.Dialog {
     }
     function openFile(f) {
         dlg.close();
-        editor.openCourse(f, mods.currentIndex > 0 ? mods.currentText : "");
+        const m = mods.currentIndex > 0 ? mods.currentText : "";
+        const go = () => dlg.editor.openCourse(f, m);
+        if (dlg.guard)
+            dlg.guard(go);
+        else
+            go();
     }
 
     ColumnLayout {

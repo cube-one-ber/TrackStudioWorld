@@ -10,15 +10,16 @@ Node {
 
     required property Editor editor
     property var info: ({ visible: false })
-    required property PerspectiveCamera camera
+    required property Camera camera
+    // gizmo size in the top view (0 for the perspective camera, where it follows distance)
+    property real orthoScale: 0
     property int hoverAxis: -1
     property int activeAxis: -1
     readonly property string mode: editor.gizmoMode
 
-    visible: info.visible === true
     position: visible ? Qt.vector3d(info.p[0], info.p[1], info.p[2]) : Qt.vector3d(0, 0, 0)
     rotation: visible ? Qt.quaternion(info.q[0], info.q[1], info.q[2], info.q[3]) : Qt.quaternion(1, 0, 0, 0)
-    readonly property real s: Math.max(0.01, camera.position.minus(position).length() * 0.13)
+    readonly property real s: orthoScale > 0 ? orthoScale : Math.max(0.01, camera.position.minus(position).length() * 0.13)
     scale: Qt.vector3d(s, s, s)
 
     function col(axis, base) {

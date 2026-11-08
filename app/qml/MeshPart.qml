@@ -27,13 +27,13 @@ Model {
         metalness: 0
         cullMode: Material.NoCulling
         alphaMode: mp.d.cutout ? PrincipledMaterial.Mask : PrincipledMaterial.Opaque
-        alphaCutoff: 0.45
+        alphaCutoff: mp.d.alphaCutoff
     }
     Texture {
         id: tex
         source: mp.d.texture
-        // the model loader stores V with the image's top row at 0 (as the thumbnail renderer
-        // samples it); Qt Quick 3D samples with the bottom row at 0
+        // model UVs put the texture's top row at V = 0 (as the game and the thumbnail renderer
+        // sample it); Qt Quick 3D samples with the bottom row at 0
         flipV: true
         generateMipmaps: true
         mipFilter: Texture.Linear

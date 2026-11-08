@@ -9,6 +9,10 @@ import TrackStudioWorld
 // Result of a save: what was written, and how to load the mod in an emulator.
 Kirigami.Dialog {
     id: dlg
+    // dim the editor behind the dialog (set here: the default fade did not always end dimmed)
+    QQC2.Overlay.modal: Rectangle {
+        color: Qt.rgba(0, 0, 0, 0.45)
+    }
     required property Editor editor
     property var saveResult: ({ ok: false })
     readonly property bool ok: saveResult.ok === true
@@ -17,15 +21,20 @@ Kirigami.Dialog {
     title: ok ? "Mod saved" : "Not saved"
     preferredWidth: Kirigami.Units.gridUnit * 34
     padding: Kirigami.Units.largeSpacing
-    standardButtons: Kirigami.Dialog.Close
-    customFooterActions: [
-        Kirigami.Action {
-            text: "Open Mod Folder"
-            icon.name: "folder-open"
-            enabled: dlg.ok
-            onTriggered: dlg.editor.openFolder("mods")
-        }
-    ]
+    footer: DialogFooter {
+        rejectText: ""
+        acceptText: "Close"
+        acceptIcon: "dialog-close"
+        actions: [
+            Kirigami.Action {
+                text: "Open Mod Folder"
+                icon.name: "folder-open"
+                enabled: dlg.ok
+                onTriggered: dlg.editor.openFolder("mods")
+            }
+        ]
+        onAccepted: dlg.close()
+    }
 
     ColumnLayout {
         spacing: Kirigami.Units.largeSpacing
@@ -183,8 +192,10 @@ Kirigami.Dialog {
                     Layout.fillWidth: true
                     Layout.preferredWidth: dlg.textWidth
                     readOnly: true
-                    // one command per line; a line ending in && continues in the shell
-                    text: (dlg.saveResult.install || "").replace(" && ", " &&\n")
+                    // all of it visible: each quoted path on its own line, joined with shell line
+                    // continuations, so what is copied still runs as one command; only a path wider
+                    // than the box wraps
+                    text: (dlg.saveResult.install || "").replace(" && ", " &&\n").replace(/ "/g, " \\\n    \"")
                     wrapMode: TextEdit.WrapAnywhere
                     font.family: "monospace"
                     font.pointSize: Kirigami.Theme.smallFont.pointSize

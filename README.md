@@ -74,23 +74,19 @@ with Rust's bundled lld; see the comment there for why.
 
 ## Game files
 
-The editor reads:
+The editor reads the game's extracted RomFS (with `Banc/`, `RSDB/`, `System/`, `Model/` and
+`Tex/`), version 1.8.0. Course data, models and textures all come from it: the editor reads the
+game's BFRES models and BNTX textures itself, so there is nothing to export first.
 
-- **romfs**: the game's extracted RomFS (with `Banc/`, `RSDB/`, `System/`), version 1.8.0;
-- **models**: the game's models exported to FBX with Switch Toolbox, in its usual layout
-  (`<Category>/<Model>.<Variant>/<Variant>.fbx` with textures beside each file). Without them
-  objects are drawn as boxes and drop-to-ground has no surface.
-
-Set both in **File → Settings…**, or start with:
+Set it in **File → Settings…**, or start with:
 
 ```sh
-trackstudioworld --romfs /path/to/romfs --models /path/to/Models
+trackstudioworld --romfs /path/to/romfs
 ```
 
 | Option | Meaning |
 |---|---|
 | `--romfs DIR` | The game's extracted RomFS |
-| `--models DIR` | The FBX model export |
 | `--mods DIR` | Where mods are saved (default `~/MKW-Mods`) |
 | `--ns2jb DIR` | A Switch 2 SD card (or a folder to copy onto one): export there on every save |
 | `--open FILE` | Open a course at start, e.g. `"Banc/Race_FirstCircuit_A_00[Game03].bcett.byml.zs"` |
@@ -106,15 +102,49 @@ game's databases and every course, about 7 s, and caches the result in
    course's Japanese name. Pick a mod under **From:** to keep editing one you saved.
 2. **Select** by clicking in the view or the Outliner. Ctrl+Click adds to the selection;
    clicking a group in the Outliner selects every object of that type.
-3. **Edit**:
-   - move, rotate or scale with the gizmo (1, 2, 3 switch modes) or type values in Properties;
-   - duplicate (Ctrl+D), delete (Del), drop onto the stage surface (G), or change an object
-     into another type (**Change Object…**);
-   - add the current asset with a double-click in Assets, Q, or Alt+Click in the view;
-   - **Paths → New Path…** starts a path of any type, I inserts a point after the selected one,
-     L links the selection to the next thing you click;
-   - undo and redo with Ctrl+Z and Ctrl+Shift+Z.
-4. **Save** with Ctrl+S. The Help panel lists every key.
+   Drag in empty space to box-select (Ctrl adds, Ctrl+Shift removes), Ctrl+A selects
+   everything, H hides the selection and Alt+H shows everything again. The **Editor** chip over
+   the view limits what clicks pick to objects, paths, or one path type, like Track Studio's
+   editor list.
+3. **Edit objects**:
+   - move, rotate or scale with the gizmo (1, 2, 3 switch modes), or with the mouse: G, R and T,
+     then X, Y or Z to lock an axis, a click to finish and Esc to cancel; or type values in
+     Properties. **Snap** sets move and rotation steps; Ctrl inverts snapping for one drag;
+   - copy, cut and paste (Ctrl+C, Ctrl+X, Ctrl+V at the view centre, Ctrl+Shift+V in place, also
+     between courses), duplicate (Ctrl+D), delete (Del), drop onto the stage surface (End), or
+     change an object into another type (**Change Object…**);
+   - add the current asset with a double-click in Assets, Q, Alt+Click in the view, or by
+     dragging it from Assets into the view; star assets to keep them under **★ Favourites**;
+   - select several objects or points to see their centre and size, move them together, and set
+     a parameter on all of them at once.
+4. **Edit paths** (Paths menu):
+   - **New Path…** starts any path type as one point, a line, a curve or a closed loop; with a
+     path type picked in the Editor chip, Alt+Click starts one where you click;
+   - with a point selected, Alt+Click adds the next point there (from a middle point it starts a
+     branch), E extrudes a point and moves it with the mouse, I inserts a point after it;
+   - C connects or disconnects two selected points, **Split Path Here** and **Join Paths**
+     (Ctrl+J) cut and merge paths, **Reverse Path** turns them around;
+   - **Orient Points Along Path** (O) turns points to face along the path, upright on the road,
+     as shipped points do; **Smooth Curve**, **Straighten** and **Subdivide** reshape a path, and
+     curve handles can be dragged in the view (hold Ctrl to keep both in line);
+   - **Change Path Type…** converts paths, **Place Objects Along Path…** lines the current
+     asset up along one (a coin line, say), and L links the selection to the next click;
+   - tick **Checkpoint** in the Lap section of Properties to make lap points checkpoints. Their
+     numbers are kept in order for you: after every edit they count up from 1 along the lap,
+     starting again after each start, lap check and goal point, as in the shipped courses.
+     Checkpoint gates are drawn with a cross, start, lap check and goal gates in white.
+5. **Check** the **Problems** tab: what would stop a save, and anything the shipped courses never
+   do (a race without a lap path, lap points facing backwards, a lap path that doesn't loop, the
+   wrong number of start positions, lap checkpoints missing or out of order, parameters stored
+   with the wrong type). Click a problem to select it.
+6. **Save** with Ctrl+S, or **Save and Test** (F5) to also run a command from Settings, such as
+   an emulator. Undo and redo (Ctrl+Z, Ctrl+Shift+Z) name what they undo; the editor asks before
+   closing or opening another course with unsaved changes, and **File → Open Recent** lists
+   recent courses. Right-click the view or the Outliner for the common actions; the Help panel
+   lists every key.
+
+The view has a **top view** (Ctrl+T, orthographic), Alt+drag orbiting, and lit, unlit, normals
+and wireframe shading.
 
 ## Installing a mod
 
@@ -138,8 +168,8 @@ The editor writes a LayeredFS mod to `<mods>/<mod name>/romfs/`.
 - Reversing a path doesn't rewire the links at its ends.
 - No model import, collision, camera, minimap or lighting editing. Course geometry is BFRES
   with Havok collision, and the open world is generated from heightmaps.
-- Some models failed in the Switch Toolbox export and show as boxes; skinned models show in
-  their bind pose.
+- Models are drawn with their albedo texture only, at the most detailed level of detail;
+  skinned models show in their bind pose.
 
 ## Repository
 

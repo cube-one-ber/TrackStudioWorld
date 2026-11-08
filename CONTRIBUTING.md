@@ -23,9 +23,13 @@ Thanks for helping. A few things keep this project useful and safe to share.
 | `core/src/workspace.rs` | Loading courses and saving mods (emulator and ns2jb-modloader) |
 | `core/src/catalog.rs` | Object types, parameter tables, path types and stage placements, cached as JSON |
 | `core/src/doc.rs` | An open course and every edit, with undo |
-| `core/src/math.rs`, `raycast.rs`, `scene.rs`, `fbx.rs` | Transforms, picking, what the viewport draws, the FBX reader |
+| `core/src/tools.rs` | Copy and paste, path drawing and reshaping, placing along paths |
+| `core/src/check.rs` | The course checks the Problems panel lists |
+| `core/src/bfres.rs`, `bntx.rs`, `model.rs` | The game's models and textures |
+| `core/src/math.rs`, `raycast.rs`, `scene.rs` | Transforms, picking, what the viewport draws |
 | `app/src/editor.rs` | The QObject QML talks to (CXX-Qt bridge) |
 | `app/src/state.rs` | Editor state behind the bridge, and the JSON the panels show |
+| `app/src/prefs.rs` | Recent courses, favourite assets and view settings (`editor.json`) |
 | `app/qml/` | The panels and the 3D view |
 | `tools/emutest/` | The in-game test harness |
 
@@ -43,7 +47,7 @@ cargo test --workspace
 against the shipped files (absolute paths; cargo runs tests from each crate's folder):
 
 ```sh
-MKW_ROMFS=/abs/path/romfs MKW_MODELS=/abs/path/Models cargo test --release -p mkwtrack
+MKW_ROMFS=/abs/path/romfs cargo test --release -p mkwtrack
 ```
 
 Changes to how files are written or which fields are set should also pass the in-game tests;

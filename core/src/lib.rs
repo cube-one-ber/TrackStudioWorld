@@ -5,21 +5,29 @@
 //! * [`banc`]: course files and the summaries the game reads from them.
 //! * [`workspace`]: loading courses and saving them as LayeredFS mods.
 //! * [`catalog`]: object types, parameter tables, path types and stage placements.
-//! * [`doc`]: an open course with undo and redo.
-//! * [`math`], [`raycast`], [`scene`], [`fbx`]: transforms, picking and what the viewport draws.
+//! * [`doc`]: an open course with undo and redo; [`tools`]: copy and paste, path drawing and
+//!   reshaping, placing along paths; [`checkpoints`]: lap checkpoint numbering; [`check`]: the
+//!   course checks the Problems panel lists.
+//! * [`bfres`], [`bntx`], [`model`]: the game's models and textures, read from the romfs.
+//! * [`math`], [`raycast`], [`scene`]: transforms, picking and what the viewport draws.
 
 pub mod banc;
+pub mod bfres;
+pub mod bntx;
 pub mod byml;
 pub mod catalog;
+pub mod check;
+pub mod checkpoints;
 pub mod doc;
 pub mod error;
-pub mod fbx;
 pub mod io;
 pub mod math;
+pub mod model;
 pub mod raycast;
 pub mod restbl;
 pub mod sarc;
 pub mod scene;
+pub mod tools;
 pub mod typedjson;
 pub mod workspace;
 

@@ -13,6 +13,8 @@ QQC2.ScrollView {
     signal focusRequested()
     signal changeObjectRequested()
     signal duplicateRequested()
+    // the window's actions (path tools and the like), shown as buttons
+    property var actions: ({})
     property var s: ({ kind: "none" })
     // parameter names are identifiers: the label column fits the longest one (up to 45% of the panel)
     readonly property real paramLabelWidth: {
@@ -85,7 +87,7 @@ QQC2.ScrollView {
                     maximumLineCount: 2
                     elide: Text.ElideRight
                     text: pp.s.kind === "actor" ? pp.s.name
-                        : pp.s.kind === "point" ? pp.s.rail + "  ·  point " + pp.s.index
+                        : pp.s.kind === "point" ? pp.s.rail + "  ·  #" + pp.s.index
                         : pp.s.kind === "rail" ? pp.s.name
                         : pp.s.kind === "multi" ? pp.s.count + " selected"
                         : pp.s.kind === "course" ? pp.s.file.replace("Banc/", "").replace(".bcett.byml.zs", "") : ""
@@ -151,27 +153,70 @@ QQC2.ScrollView {
             QQC2.Label { Kirigami.FormData.label: "Path data:"; text: pp.s.padFile ? pp.s.padEntries + " entries" : "none"; wrapMode: Text.Wrap }
             QQC2.Label { Kirigami.FormData.label: "Source:"; text: pp.s.fromMod ? "mod \"" + pp.editor.modName + "\"" : "game files" }
         }
-        Kirigami.PlaceholderMessage {
+        // no course: one dim line (the viewport holds the Open Course button)
+        QQC2.Label {
             visible: pp.s.kind === "none"
             Layout.fillWidth: true
-            Layout.fillHeight: true
-            Layout.margins: Kirigami.Units.largeSpacing
-            icon.name: "document-open"
-            text: "No course open"
-            explanation: "Open a course to edit its objects and paths."
+            Layout.margins: Kirigami.Units.gridUnit * 2
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.Wrap
+            color: Kirigami.Theme.disabledTextColor
+            text: "The selection's position and parameters appear here."
         }
         Kirigami.PlaceholderMessage {
             visible: pp.s.kind === "course"
             Layout.fillWidth: true
             Layout.margins: Kirigami.Units.largeSpacing
-            icon.name: "edit-select"
+            icon.name: "edit-select-none"
             text: "Nothing selected"
             explanation: "Click an object or path point. Ctrl+Click adds to the selection."
+        }
+
+        // several items: what they are, where, and moving them together
+        Section {
+            title: "Selection"
+            visible: pp.s.kind === "multi"
+            Repeater {
+                model: pp.s.kind === "multi" ? (pp.s.types || []) : []
+                delegate: RowLayout {
+                    required property var modelData
+                    Layout.fillWidth: true
+                    QQC2.Label { text: modelData.name; Layout.fillWidth: true; elide: Text.ElideMiddle }
+                    QQC2.Label { text: modelData.count; color: Kirigami.Theme.disabledTextColor; font.features: { "tnum": 1 } }
+                }
+            }
+            QQC2.Label {
+                visible: (pp.s.moreTypes || 0) > 0
+                text: "and " + pp.s.moreTypes + " more types"
+                color: Kirigami.Theme.disabledTextColor
+            }
+            VecRow {
+                visible: (pp.s.positioned || 0) > 0
+                label: "Centre"
+                values: pp.s.centre || [0, 0, 0]
+                onCommitted: (v) => pp.editor.moveSelectionTo(v[0], v[1], v[2])
+            }
+            VecRow {
+                visible: (pp.s.positioned || 0) > 1
+                label: "Size"
+                values: pp.s.size || [0, 0, 0]
+                enabled: false
+            }
+            QQC2.Label {
+                visible: pp.s.distance !== undefined && pp.s.distance !== null
+                text: "Distance between them: " + Number(pp.s.distance || 0).toFixed(2) + " m"
+            }
         }
 
         Section {
             title: "Transform"
             visible: pp.s.kind === "actor" || pp.s.kind === "point"
+            Kirigami.InlineMessage {
+                Layout.fillWidth: true
+                visible: pp.s.kind === "point" && pp.s.handle !== undefined && pp.s.handle !== null
+                type: Kirigami.MessageType.Information
+                text: "Editing the " + (pp.s.handle === 0 ? "incoming" : "outgoing") + " curve handle. Hold Ctrl while dragging it to keep both handles in one line. Esc goes back to the point."
+            }
             VecRow {
                 label: "Translate"
                 values: pp.s.translate || [0, 0, 0]
@@ -216,6 +261,39 @@ QQC2.ScrollView {
             }
         }
 
+        // lap points: whether a point is a checkpoint, and its number (the editor keeps the
+        // numbers counting up along the lap after every edit)
+        Section {
+            title: "Lap"
+            visible: (pp.s.kind === "point" && pp.s.lap === true) || (pp.s.kind === "multi" && (pp.s.lapPoints || 0) > 0)
+            QQC2.CheckBox {
+                id: checkpointBox
+                readonly property bool all: pp.s.kind === "point" ? pp.s.checkpoint !== null && pp.s.checkpoint !== undefined
+                                                                  : (pp.s.checkpoints || 0) === (pp.s.lapPoints || 0)
+                readonly property bool some: pp.s.kind === "multi" && (pp.s.checkpoints || 0) > 0 && !all
+                text: pp.s.kind === "multi" ? "Checkpoints (" + (pp.s.checkpoints || 0) + " of " + (pp.s.lapPoints || 0) + " lap points)" : "Checkpoint"
+                tristate: some
+                checkState: all ? Qt.Checked : some ? Qt.PartiallyChecked : Qt.Unchecked
+                // a click on a partly checked box makes them all checkpoints
+                nextCheckState: function () { return all ? Qt.Unchecked : Qt.Checked; }
+                onClicked: pp.editor.pathTool(all ? "checkpoint-off" : "checkpoint-on")
+                QQC2.ToolTip.text: "Racers have to pass the checkpoints in order for a lap to count. They are numbered for you, from 1 after each start, lap check and goal point."
+                QQC2.ToolTip.visible: hovered
+                QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+            }
+            QQC2.Label {
+                Layout.fillWidth: true
+                visible: pp.s.kind === "point" && (checkpointBox.all || !!pp.s.lapMarker)
+                wrapMode: Text.Wrap
+                color: Kirigami.Theme.disabledTextColor
+                text: pp.s.lapMarker
+                      ? "This is the " + pp.s.lapMarker + " point: the checkpoint count starts again here."
+                      : (pp.s.checkpoint || 0) > 0
+                        ? "Checkpoint " + Number(pp.s.checkpoint) + " after the last start, lap check or goal point."
+                        : "Not numbered yet: its lap loop needs a start, lap check or goal point."
+            }
+        }
+
         Section {
             title: "Edit"
             visible: pp.s.kind === "actor" || pp.s.kind === "point" || pp.s.kind === "rail" || pp.s.kind === "multi"
@@ -226,14 +304,39 @@ QQC2.ScrollView {
                 uniformCellWidths: true
                 columnSpacing: Kirigami.Units.smallSpacing
                 rowSpacing: Kirigami.Units.smallSpacing
+                // the main action of each kind of selection
                 QQC2.Button { visible: pp.s.kind === "actor"; Layout.fillWidth: true; text: "Change Object…"; icon.name: "exchange-positions"; onClicked: pp.changeObjectRequested() }
                 QQC2.Button { visible: pp.s.kind === "point"; Layout.fillWidth: true; text: "Insert Point After"; icon.name: "node-add"; onClicked: pp.editor.insertPoint() }
-                QQC2.Button { visible: pp.s.kind === "point"; Layout.fillWidth: true; text: pp.s.control0 ? "Remove Curve Handles" : "Add Curve Handles"; icon.name: "draw-bezier-curves"; onClicked: pp.editor.toggleCurve() }
-                QQC2.Button { visible: pp.s.kind === "point"; Layout.fillWidth: true; text: "Select Path"; icon.name: "draw-polyline"; onClicked: pp.editor.selectHash(pp.s.railHash, false) }
-                QQC2.Button { visible: pp.s.kind === "point" || pp.s.kind === "rail"; Layout.fillWidth: true; text: "Reverse Path"; icon.name: "media-playlist-repeat"; onClicked: pp.editor.reverseRail() }
+                QQC2.Button { visible: pp.s.kind === "point"; Layout.fillWidth: true; action: pp.actions.extrude || null }
+                QQC2.Button { visible: pp.s.kind === "rail" || (pp.s.kind === "multi" && pp.s.rails > 0); Layout.fillWidth: true; action: pp.actions.smooth || null }
+                QQC2.Button { visible: pp.s.kind === "rail" || (pp.s.kind === "multi" && pp.s.rails > 0); Layout.fillWidth: true; action: pp.actions.subdivide || null }
+                QQC2.Button { visible: pp.s.kind === "multi" && pp.s.points === 2; Layout.fillWidth: true; action: pp.actions.connect || null }
+                QQC2.Button { visible: pp.s.kind === "multi" && pp.s.rails === 2; Layout.fillWidth: true; action: pp.actions.join || null }
+                // the rest of the path tools, in one menu so the panel stays short
+                QQC2.Button {
+                    id: pathTools
+                    visible: pp.s.kind === "point" || pp.s.kind === "rail" || (pp.s.kind === "multi" && (pp.s.rails > 0 || pp.s.points > 0))
+                    Layout.fillWidth: true
+                    text: "Path Tools ▾"
+                    icon.name: "draw-path"
+                    down: pathMenu.visible
+                    onClicked: pathMenu.popup(pathTools, 0, pathTools.height)
+                    QQC2.Menu {
+                        id: pathMenu
+                        QQC2.MenuItem { visible: pp.s.kind === "point"; height: visible ? implicitHeight : 0; text: pp.s.control0 ? "Remove Curve Handles" : "Add Curve Handles"; icon.name: "draw-bezier-curves"; onTriggered: pp.editor.toggleCurve() }
+                        QQC2.MenuItem { visible: pp.s.kind === "point" && pp.s.index + 1 < pp.s.count; height: visible ? implicitHeight : 0; action: pp.actions.split || null }
+                        QQC2.MenuItem { visible: pp.s.kind === "point"; height: visible ? implicitHeight : 0; text: "Select Path"; icon.name: "draw-polyline"; onTriggered: pp.editor.selectHash(pp.s.railHash, false) }
+                        QQC2.MenuItem { visible: pp.s.kind === "multi" && pp.s.points > 0; height: visible ? implicitHeight : 0; action: pp.actions.selectPath || null }
+                        QQC2.MenuItem { visible: pp.s.kind === "point" || pp.s.kind === "rail"; height: visible ? implicitHeight : 0; text: "Reverse Path"; icon.name: "media-playlist-repeat"; onTriggered: pp.editor.pathTool("reverse") }
+                        QQC2.MenuItem { visible: pp.s.kind !== "multi" || pp.s.rails > 0; height: visible ? implicitHeight : 0; action: pp.actions.orient || null }
+                        QQC2.MenuItem { visible: pp.s.kind === "rail" || pp.s.kind === "point"; height: visible ? implicitHeight : 0; action: pp.actions.placeAlong || null }
+                        QQC2.MenuItem { visible: pp.s.kind === "rail" || pp.s.kind === "point"; height: visible ? implicitHeight : 0; action: pp.actions.changePathType || null }
+                    }
+                }
                 QQC2.Button { Layout.fillWidth: true; text: "Drop to Ground"; icon.name: "go-bottom"; enabled: pp.editor.groundReady; onClicked: pp.editor.dropToGround() }
                 QQC2.Button { Layout.fillWidth: true; text: "Focus Selection"; icon.name: "crosshairs"; onClicked: pp.focusRequested() }
                 QQC2.Button { Layout.fillWidth: true; text: "Duplicate"; icon.name: "edit-copy"; onClicked: pp.duplicateRequested() }
+                QQC2.Button { Layout.fillWidth: true; action: pp.actions.hide || null }
                 QQC2.Button { Layout.fillWidth: true; text: "Delete"; icon.name: "edit-delete"; onClicked: pp.editor.deleteSelected() }
             }
             QQC2.CheckBox {
@@ -245,8 +348,8 @@ QQC2.ScrollView {
         }
 
         Section {
-            title: "Parameters"
-            visible: (pp.s.kind === "actor" || pp.s.kind === "point" || pp.s.kind === "rail")
+            title: pp.s.kind === "multi" ? "Parameters (all " + pp.s.count + ")" : "Parameters"
+            visible: (pp.s.kind === "actor" || pp.s.kind === "point" || pp.s.kind === "rail") || (pp.s.kind === "multi" && !!pp.s.paramTable)
             QQC2.Label {
                 Layout.fillWidth: true
                 Layout.bottomMargin: 2
@@ -261,6 +364,14 @@ QQC2.ScrollView {
                 visible: pp.paramError.length > 0
                 type: Kirigami.MessageType.Error
                 text: pp.paramError
+            }
+            QQC2.Label {
+                visible: pp.s.kind === "multi"
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                text: "A value set here goes to every selected item. \"mixed\" means they differ."
+                color: Kirigami.Theme.disabledTextColor
+                font.pointSize: Kirigami.Theme.smallFont.pointSize
             }
             QQC2.Label {
                 visible: !pp.s.params || pp.s.params.length === 0
@@ -281,6 +392,7 @@ QQC2.ScrollView {
                 Layout.fillWidth: true
                 Layout.topMargin: Kirigami.Units.smallSpacing
                 spacing: Kirigami.Units.smallSpacing
+                visible: pp.s.kind !== "multi"
                 QQC2.TextField { id: newKey; placeholderText: "Add a parameter…"; Layout.fillWidth: true }
                 QQC2.ComboBox { id: newType; model: ["s32", "f32", "bool", "u32", "str"]; Layout.preferredWidth: Kirigami.Units.gridUnit * 4.5 }
                 QQC2.Button {

@@ -18,15 +18,17 @@ ColumnLayout {
     spacing: 0
 
     function refresh() {
-        items = JSON.parse(editor.assets(search.text, category.currentIndex > 0 ? category.currentText : "", placed.checked));
+        const c = category.currentIndex === 0 ? "" : category.currentIndex === 1 ? "favorites" : category.currentText;
+        items = JSON.parse(editor.assets(search.text, c, placed.checked));
     }
     Connections {
         target: ab.editor
         function onReadyChanged() {
-            category.model = ["All categories"].concat(JSON.parse(ab.editor.categories()));
+            category.model = ["All categories", "★ Favourites"].concat(JSON.parse(ab.editor.categories()));
             ab.refresh();
         }
         function onCourseTitleChanged() { ab.refresh(); }
+        function onRevisionChanged() { if (category.currentIndex === 1) ab.refresh(); }
         function onThumbsDoneChanged() { if (ab.editor.thumbsDone % 100 === 0 || ab.editor.thumbsDone === ab.editor.thumbsTotal) ab.refresh(); }
     }
 
@@ -97,6 +99,17 @@ ColumnLayout {
             required property var modelData
             width: grid.cellWidth
             height: grid.cellHeight
+            // drag a card into the viewport to place it where it lands
+            Drag.active: dragger.active
+            Drag.dragType: Drag.Automatic
+            Drag.supportedActions: Qt.CopyAction
+            Drag.mimeData: ({ "text/x-trackstudioworld-asset": modelData.name })
+            Drag.imageSource: modelData.thumb
+            DragHandler {
+                id: dragger
+                target: null
+                onActiveChanged: if (active) ab.assetChosen(cell.modelData.name)
+            }
             highlighted: ab.currentAsset === modelData.name
             padding: 4
             // a card per object; the current one (used by Add / Q / Alt+Click) is outlined
@@ -142,6 +155,25 @@ ColumnLayout {
                             color: "white"
                         }
                     }
+                    QQC2.ToolButton {
+                        anchors.left: parent.left
+                        anchors.top: parent.top
+                        visible: cell.modelData.fav || cell.hovered
+                        implicitWidth: Kirigami.Units.iconSizes.small + 6
+                        implicitHeight: implicitWidth
+                        padding: 0
+                        icon.name: cell.modelData.fav ? "starred-symbolic" : "non-starred-symbolic"
+                        icon.width: Kirigami.Units.iconSizes.small
+                        icon.height: Kirigami.Units.iconSizes.small
+                        icon.color: cell.modelData.fav ? "#ffc04d" : Kirigami.Theme.textColor
+                        onClicked: {
+                            ab.editor.toggleFavorite(cell.modelData.name);
+                            ab.refresh();
+                        }
+                        QQC2.ToolTip.text: cell.modelData.fav ? "Remove from favourites" : "Add to favourites"
+                        QQC2.ToolTip.visible: hovered
+                        QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+                    }
                     Rectangle {
                         visible: cell.modelData.inCourse
                         anchors.right: parent.right
@@ -173,7 +205,7 @@ ColumnLayout {
                     }
                 }
             }
-            QQC2.ToolTip.text: modelData.name + "\n" + modelData.label + "\n" + modelData.category + (modelData.inCourse ? "\n(in this course)" : "")
+            QQC2.ToolTip.text: modelData.name + "\n" + modelData.label + "\n" + modelData.category + (modelData.inCourse ? "\n(in this course)" : "") + "\n\nDouble-click adds it at the view centre; drag it into the view to place it there."
             QQC2.ToolTip.visible: hovered
             QQC2.ToolTip.delay: 500
             onClicked: ab.assetChosen(modelData.name)
@@ -186,6 +218,14 @@ ColumnLayout {
                 id: menu
                 QQC2.MenuItem { text: "Add at view centre"; icon.name: "list-add"; onTriggered: ab.assetActivated(cell.modelData.name) }
                 QQC2.MenuItem { text: "Change selected objects to this"; icon.name: "exchange-positions"; onTriggered: ab.changeRequested(cell.modelData.name) }
+                QQC2.MenuItem {
+                    text: cell.modelData.fav ? "Remove from Favourites" : "Add to Favourites"
+                    icon.name: cell.modelData.fav ? "starred-symbolic" : "non-starred-symbolic"
+                    onTriggered: {
+                        ab.editor.toggleFavorite(cell.modelData.name);
+                        ab.refresh();
+                    }
+                }
             }
         }
     }

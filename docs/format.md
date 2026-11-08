@@ -66,6 +66,17 @@ hash (code: the point reader at 0x29ad70 reads each of these keys).
   point (data).
 - Lap checkpoint gates span `RectOffset.y - RectSize.y` up to `RectOffset.y` around the point
   (data: every shipped gate bottoms out 5 to 10 m below its point with that reading).
+- A lap point is a checkpoint when its `Dynamic` has `CheckPoint` (f32). The numbers follow one
+  rule (data: 5,778 of the 5,779 shipped values, in 287 files; the other is a 5.1 between a 4
+  and a 6). Walk the lap graph along each path's points (round a closed path) and through
+  `BasicSignal` and `MessageLink` links between lap points, which usually join a path's last
+  point to the next path's first point and sometimes enter a path in the middle. The count
+  starts again at 0 at every point with `IsStart`, `IsLapCheck` or `IsGoal`, and each
+  checkpoint is one more than the highest count on any way into it, so parallel branches carry
+  the same numbers and the count carries on from the longer one where they meet. No shipped
+  point is both a checkpoint and a start, lap check or goal point. The editor renumbers after
+  every edit that could change the numbers and on save, leaving values whose whole part is
+  already right (such as that 5.1).
 - PathAdditionalData has an entry for 227,255 of the 228,110 shipped `RoutePathGraph` points
   (the 855 without one are in 14 courses) and for no other point (data), so new route points
   copy a neighbour's entry. Shipped files also hold some entries
@@ -99,6 +110,29 @@ pattern (data: all 1,311 Banc entries):
 Entries are a CRC32 of the path without `.zs`, plus a short table of full paths for names whose
 CRC32 collides. The editor writes the table into the mod only when a file outgrew its entry,
 and only raises entries; the table rewrites byte-identically (data).
+
+## Models and textures
+
+The viewport, the thumbnails and drop-to-ground read the game's own models (data: every file
+under `Model/` parses, and Mario Bros. Circuit's stage model spans the box its ActorInfo
+gives, `ModelAABBMin` and `ModelAABBMax`, to within a metre).
+
+- An object type's ModelInfo names its model as `Work/Model/<Category>/<Model>/output/<Variant>.fmdb`;
+  the file is `Model/<Model>.<Variant>.bfres.zs`.
+- BFRES version 10. Each shape has one mesh per level of detail; the first is the most detailed.
+  Index and vertex data sit in one buffer after the structures. Mesh indices add the mesh's
+  base vertex. Vertex attributes use nn::gfx formats (positions as 32-bit or half floats,
+  normals as 10-10-10-2, texture coordinates as 16- or 32-bit).
+- Shapes with no skinning follow their bone; shapes with one weight follow the bone each
+  vertex's `_i0` index names through the skeleton's matrix-to-bone list; smooth-skinned
+  vertices are stored in model space.
+- A material's textures and samplers are parallel lists; the `_a0` sampler is the albedo. Its
+  render info says whether it is alpha-tested (`gsys_alpha_test_enable`,
+  `gsys_render_state_mode` = `mask`).
+- Textures are `Tex/<name>.bntx.zs`, one texture per file, on the Switch 2 platform (`Ounc`).
+  Their surfaces are block linear with the Tegra X1's block heights, but each 512-byte GOB is
+  ordered as the Orin TRM describes. Albedo textures are ASTC 6x6 or 8x8, mostly sRGB (data:
+  all 6,457 that models use decode).
 
 ## Mods
 
