@@ -72,6 +72,7 @@ pub fn expand(s: &str) -> PathBuf {
     if s.is_empty() {
         return PathBuf::new();
     }
+    let s = if cfg!(windows) { drive_path(s) } else { s };
     let p = match s.strip_prefix('~') {
         Some("") => home(),
         Some(rest) if rest.starts_with(['/', std::path::MAIN_SEPARATOR]) => {
@@ -80,6 +81,24 @@ pub fn expand(s: &str) -> PathBuf {
         _ => PathBuf::from(s),
     };
     if p.is_absolute() { p } else { std::env::current_dir().unwrap_or_default().join(p) }
+}
+
+/// "/C:/x" is how a URL's path names a Windows drive: without the slash it is the path "C:/x".
+fn drive_path(s: &str) -> &str {
+    match s.as_bytes() {
+        [b'/' | b'\\', drive, b':', ..] if drive.is_ascii_alphabetic() => &s[1..],
+        _ => s,
+    }
+}
+
+/// The local path of a `file:` URL (already percent-decoded), as a folder picker returns it.
+/// On Windows the drive follows a slash (`file:///C:/x`) and a network share is the URL's host
+/// (`file://server/share`).
+pub fn url_path(url: &str, windows: bool) -> String {
+    let Some(rest) = url.strip_prefix("file:") else { return url.to_string() };
+    // an empty host ("file:///x") leaves the path; a host stays in front of it ("//host/x")
+    let path = rest.strip_prefix("//").filter(|p| p.starts_with('/')).unwrap_or(rest);
+    if windows { drive_path(path).replace('/', "\\") } else { path.to_string() }
 }
 
 /// A per-user folder from an environment variable, or `fallback` under the home folder.
@@ -207,6 +226,24 @@ mod tests {
         assert_eq!(file_url(Path::new("/a/b c.png")), "file:///a/b c.png");
         assert_eq!(file_url(Path::new("C:\\Users\\x\\t.png")), "file:///C:/Users/x/t.png");
         assert_eq!(file_url(Path::new("\\\\?\\C:\\x")), "file:///C:/x");
+    }
+
+    #[test]
+    fn picked_folders() {
+        assert_eq!(url_path("file:///home/x/MKW + EMU/romfs", false), "/home/x/MKW + EMU/romfs");
+        assert_eq!(url_path("file:///E:/Dumps/MKWo/1.8.0/romfs", true), "E:\\Dumps\\MKWo\\1.8.0\\romfs");
+        assert_eq!(url_path("file:///C:/Users/x/MKW [ROM]/base/romfs", true), "C:\\Users\\x\\MKW [ROM]\\base\\romfs");
+        assert_eq!(url_path("file://nas/dumps/romfs", true), "\\\\nas\\dumps\\romfs");
+        assert_eq!(url_path("E:\\Dumps", true), "E:\\Dumps");
+    }
+
+    #[test]
+    fn drive_after_a_slash() {
+        assert_eq!(drive_path("/E:/Dumps/romfs"), "E:/Dumps/romfs");
+        assert_eq!(drive_path("\\c:\\x"), "c:\\x");
+        for s in ["E:/Dumps", "/home/x", "/1:/x", "/E", "//nas/share", ""] {
+            assert_eq!(drive_path(s), s);
+        }
     }
 
     #[test]

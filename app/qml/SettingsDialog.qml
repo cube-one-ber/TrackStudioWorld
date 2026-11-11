@@ -57,7 +57,7 @@ Kirigami.Dialog {
     FolderDialog {
         id: picker
         property var target
-        onAccepted: target.text = decodeURIComponent(selectedFolder.toString().replace("file://", ""))
+        onAccepted: target.text = dlg.editor.folderPath(decodeURIComponent(selectedFolder.toString()))
     }
     ColumnLayout {
         Kirigami.InlineMessage {
@@ -88,7 +88,7 @@ Kirigami.Dialog {
                 Layout.maximumWidth: Kirigami.Units.gridUnit * 30
                 wrapMode: Text.Wrap
                 opacity: 0.7
-                text: "Mods are written to <mods folder>/<mod name>/romfs. Point the mods folder at ~/.local/share/eden/load/0400C3F00006E000 to save straight into the emulator."
+                text: "Mods are written to <mods folder>/<mod name>/romfs. Point the mods folder at " + dlg.editor.emulatorFolder() + " to save straight into the emulator."
             }
 
             Kirigami.Separator {
@@ -97,7 +97,7 @@ Kirigami.Dialog {
             }
             RowLayout {
                 Kirigami.FormData.label: "SD card:"
-                QQC2.TextField { id: ns2jb; QQC2.ToolTip.text: text; QQC2.ToolTip.visible: hovered && text.length > 0; QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay; Layout.fillWidth: true; placeholderText: "/run/media/you/SDCARD" }
+                QQC2.TextField { id: ns2jb; QQC2.ToolTip.text: text; QQC2.ToolTip.visible: hovered && text.length > 0; QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay; Layout.fillWidth: true; placeholderText: Qt.platform.os === "windows" ? "E:\\" : "/run/media/you/SDCARD" }
                 QQC2.Button { icon.name: "folder-open"; onClicked: { picker.target = ns2jb; picker.open(); } }
             }
             QQC2.CheckBox {

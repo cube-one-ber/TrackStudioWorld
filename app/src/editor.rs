@@ -189,6 +189,10 @@ pub mod qobject {
         #[qinvokable]
         fn open_folder(self: &Editor, which: &QString);
         #[qinvokable]
+        fn folder_path(self: &Editor, url: &QString) -> QString;
+        #[qinvokable]
+        fn emulator_folder(self: &Editor) -> QString;
+        #[qinvokable]
         fn build_thumbnails(self: Pin<&mut Editor>);
     }
 
@@ -1318,6 +1322,16 @@ impl qobject::Editor {
         };
         std::fs::create_dir_all(&dir).ok();
         let _ = std::process::Command::new(if cfg!(windows) { "explorer" } else { "xdg-open" }).arg(&dir).spawn();
+    }
+
+    /// The path to show for the folder a folder picker returned (its URL, percent-decoded).
+    fn folder_path(&self, url: &QString) -> QString {
+        q(crate::config::url_path(&url.to_string(), cfg!(windows)))
+    }
+
+    /// Where the emulator reads this game's mods, as the settings hint shows it.
+    fn emulator_folder(&self) -> QString {
+        q(crate::config::tilde(&crate::config::emulator_load_dir().display().to_string()))
     }
 
     /// Render a thumbnail for every object model into the cache (in the background).
