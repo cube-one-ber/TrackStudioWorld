@@ -4,6 +4,8 @@
 //! * [`byml`], [`sarc`], [`restbl`], [`typedjson`], [`io`]: file formats.
 //! * [`banc`]: course files and the summaries the game reads from them.
 //! * [`workspace`]: loading courses and saving them as LayeredFS mods.
+//! * [`hktag`], [`phive`], [`collision`]: the collision the game bakes per course for static
+//!   objects, and keeping it in step with the objects.
 //! * [`catalog`]: object types, parameter tables, path types and stage placements.
 //! * [`doc`]: an open course with undo and redo; [`tools`]: copy and paste, path drawing and
 //!   reshaping, placing along paths; [`checkpoints`]: lap checkpoint numbering; [`check`]: the
@@ -18,11 +20,14 @@ pub mod byml;
 pub mod catalog;
 pub mod check;
 pub mod checkpoints;
+pub mod collision;
 pub mod doc;
 pub mod error;
+pub mod hktag;
 pub mod io;
 pub mod math;
 pub mod model;
+pub mod phive;
 pub mod raycast;
 pub mod restbl;
 pub mod sarc;

@@ -1,18 +1,33 @@
 //! Loading course files from the game (or a mod) and saving them as LayeredFS mods.
 //!
 //! A mod is a folder `<mods root>/<mod name>/romfs/` holding only the files that differ from
-//! the game: the course file, its PathAdditionalData, and the resource size table when a file
-//! outgrew its entry. Emulators (Eden and forks) read `load/<title id>/<mod name>/romfs`;
+//! the game: the course file, its PathAdditionalData, the course's baked collision when an
+//! object in it moved, came or went, and the resource size table when a file outgrew its
+//! entry. Emulators (Eden and forks) read `load/<title id>/<mod name>/romfs`;
 //! ns2jb-modloader on a Switch 2 reads one shared `contents/<title id>/romfs` folder.
 
 use crate::banc::{TITLE_ID, pad_rel, recompute, safe_rel, srt_hash, validate};
 use crate::byml::{self, Byml};
 use crate::catalog::Catalog;
+use crate::collision::{self, Physics, Pose};
 use crate::error::{Context, Result};
 use crate::io::{compress, files_under, read_file, write_atomic};
-use crate::restbl::{ResourceSizeTable, required_size};
-use std::collections::HashSet;
+use crate::phive::{self, StaticCompound};
+use crate::restbl::{ResourceSizeTable, required_collision_size, required_size};
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+/// Where the game keeps the baked collision of courses and missions.
+const COLLISION_DIRS: [&str; 2] = ["Phive/StaticCompoundBody/Course", "Phive/StaticCompoundBody/Mission"];
+
+/// The size table entry a file needs.
+fn needed_size(rel: &str, data: &[u8]) -> u32 {
+    match phive::body_count_of(data) {
+        Ok(bodies) if ResourceSizeTable::key(rel).ends_with(".bphsc") => required_collision_size(data.len(), bodies),
+        _ => required_size(rel, data.len()),
+    }
+}
 
 /// BYML version of every Mario Kart World course file.
 pub const BYML_VERSION: u16 = 7;
@@ -45,6 +60,15 @@ impl SaveResult {
         self.ok = false;
         self
     }
+}
+
+/// What saving one collision file did.
+#[derive(Default)]
+struct CollisionSaved {
+    /// The size table entry the written file needs; `None` when nothing was written.
+    written: Option<u32>,
+    notes: Vec<String>,
+    warnings: Vec<String>,
 }
 
 /// Mod names become folder names: letters, digits, space, `_`, `.` and `-` only.
@@ -153,7 +177,7 @@ impl Workspace {
             Err(e) => return res.fail(e),
         };
         res.written.push(rel.clone());
-        sizes.push((rel.clone(), course));
+        sizes.push((rel.clone(), required_size(&rel, course)));
         if let Some(pad) = pad {
             let mut pad = pad.clone();
             if let Byml::Hash64(m) = &mut pad {
@@ -163,9 +187,26 @@ impl Workspace {
             match self.write_byml(&mod_romfs, &prel, &pad, false) {
                 Ok(n) => {
                     res.written.push(prel.clone());
-                    sizes.push((prel, n));
+                    let need = required_size(&prel, n);
+                    sizes.push((prel, need));
                 }
                 Err(e) => return res.fail(e),
+            }
+        }
+        // The course is saved; a collision file that cannot be brought along is a warning
+        if let Some(original) = &original {
+            for crel in self.collision_files(&rel, original) {
+                match self.sync_collision(&mod_romfs, &crel, original, &doc, cat) {
+                    Ok(out) => {
+                        res.notes.extend(out.notes);
+                        res.warnings.extend(out.warnings);
+                        if let Some(need) = out.written {
+                            res.written.push(crel.clone());
+                            sizes.push((crel, need));
+                        }
+                    }
+                    Err(e) => res.warnings.push(format!("{crel} was not updated, so collision may not match the course: {e}")),
+                }
             }
         }
         match self.update_restbl(&mod_romfs, &sizes) {
@@ -227,7 +268,7 @@ impl Workspace {
                     if replaced {
                         res.notes.push(format!("replaced {rel}"));
                     }
-                    sizes.push((rel.clone(), data.len()));
+                    sizes.push((rel.clone(), needed_size(&rel, &data)));
                     res.written.push(rel);
                 }
                 Err(e) => return res.fail(format!("{rel}: {e}")),
@@ -257,16 +298,96 @@ impl Workspace {
         v.first().map(|f| format!("System/Resource/{f}"))
     }
 
+    /// The baked collision files that hold this course's objects: the course's own, and any
+    /// other that bakes the same objects (`RaceStage_*` has them relative to the stage). They
+    /// are found by the objects' hashes, since nothing else names the course they belong to.
+    pub fn collision_files(&self, rel: &str, original: &Byml) -> Vec<String> {
+        static FOUND: Mutex<BTreeMap<(PathBuf, String), Vec<String>>> = Mutex::new(BTreeMap::new());
+        let key = (self.romfs.clone(), rel.to_string());
+        if let Some(v) = FOUND.lock().ok().and_then(|f| f.get(&key).cloned()) {
+            return v;
+        }
+        let hashes: HashSet<u64> = original.array("Actors").iter().map(crate::banc::hash_of).collect();
+        let files: Vec<String> = COLLISION_DIRS
+            .iter()
+            .flat_map(|dir| files_under(&self.romfs.join(dir)).into_iter().map(move |f| format!("{dir}/{f}")))
+            .filter(|f| f.ends_with(".bphsc.zs"))
+            .collect();
+        let ours = |f: &String| {
+            let links = read_file(&self.romfs.join(f)).ok().and_then(|d| phive::links_of(&d).ok()).unwrap_or_default();
+            let known = links.iter().filter(|l| hashes.contains(&l.0)).count();
+            known > 0 && known * 10 >= links.len() * 9
+        };
+        let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(12);
+        let found: Vec<String> = std::thread::scope(|s| {
+            let handles: Vec<_> = files
+                .chunks(files.len().div_ceil(threads).max(1))
+                .map(|chunk| s.spawn(move || chunk.iter().filter(|f| ours(f)).cloned().collect::<Vec<_>>()))
+                .collect();
+            handles.into_iter().flat_map(|h| h.join().expect("scan thread panicked")).collect()
+        });
+        if let Ok(mut f) = FOUND.lock() {
+            f.insert(key, found.clone());
+        }
+        found
+    }
+
+    /// Bring one baked collision file in step with the course being saved, starting from the
+    /// game's copy. Writes it into the mod when it differs from the game's, and removes an
+    /// earlier copy when it no longer does.
+    fn sync_collision(&self, mod_romfs: &Path, crel: &str, original: &Byml, doc: &Byml, cat: Option<&Catalog>) -> Result<CollisionSaved> {
+        let mut out = CollisionSaved::default();
+        let shipped = read_file(&self.romfs.join(crel))?;
+        let mut sc = StaticCompound::parse(&shipped)?;
+        let physics = |name: &str| cat.and_then(|c| c.actor(name)).map_or(Physics::None, |a| a.physics);
+        let mut donor = |name: &str| {
+            let (file, hash) = cat?.actor(name)?.collision.clone()?;
+            let from = StaticCompound::parse(&read_file(&self.romfs.join(&file)).ok()?).ok()?;
+            Some((from, hash))
+        };
+        let changes = collision::sync(&mut sc, &Pose::all(original), &Pose::all(doc), &physics, &mut donor)?;
+        let mut without: BTreeMap<&str, (usize, &str)> = BTreeMap::new();
+        for (name, why) in &changes.without {
+            without.entry(name).or_insert((0, why)).0 += 1;
+        }
+        for (name, (n, why)) in without {
+            out.warnings.push(format!("{n} new {name} will have no collision in game ({crel}: {why})"));
+        }
+        let target = mod_romfs.join(crel);
+        if !changes.any() {
+            if target.exists() {
+                std::fs::remove_file(&target).path_context(&target)?;
+                out.notes.push(format!("removed {crel} from the mod: its objects are where the game has them"));
+            }
+            return Ok(out);
+        }
+        let data = sc.to_bytes()?;
+        // What was written must read back as a file that follows every rule the game's do
+        let back = StaticCompound::parse(&data).context(format!("{crel} does not read back"))?;
+        back.check_trees().context(format!("{crel} does not read back"))?;
+        write_atomic(&target, &compress(&data)?)?;
+        if changes.parked > 0 {
+            out.notes.push(format!(
+                "{crel}: {} deleted objects were the last of their kind, so their collision was lowered 1 km instead",
+                changes.parked
+            ));
+        }
+        out.notes.push(format!("collision {crel}: {}", changes.summary()));
+        out.written = Some(needed_size(crel, &data));
+        Ok(out)
+    }
+
     /// Write the size table into `romfs` only if a file outgrew its entry. Starts from the copy
-    /// already in `romfs` when there is one, else from the game's.
-    fn update_restbl(&self, romfs: &Path, sizes: &[(String, usize)]) -> Result<Option<(String, Vec<String>)>> {
+    /// already in `romfs` when there is one, else from the game's. `sizes` gives the entry each
+    /// file needs.
+    fn update_restbl(&self, romfs: &Path, sizes: &[(String, u32)]) -> Result<Option<(String, Vec<String>)>> {
         let Some(rrel) = self.restbl_rel() else { return Ok(None) };
         let target = romfs.join(&rrel);
         let src = if target.exists() { target.clone() } else { self.romfs.join(&rrel) };
         let mut table = ResourceSizeTable::parse(&read_file(&src)?).path_context(&src)?;
         let mut notes = vec![];
-        for (rel, size) in sizes {
-            let need = required_size(rel, *size);
+        for (rel, need) in sizes {
+            let need = *need;
             let have = table.get(rel);
             if have.is_none_or(|h| h < need) {
                 table.set(rel, need);
@@ -345,6 +466,67 @@ mod tests {
         assert!(!ws.save("../../etc/passwd", &l.doc, None, "X", &HashSet::new(), None).ok);
         assert!(!ws.save(rel, &l.doc, None, "../escape", &HashSet::new(), None).ok);
         assert_eq!(ws.mods(), ["Mod"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn baked_collision_follows_the_course() {
+        let dir = temp("collision");
+        let rel = romfs(&dir.join("romfs"));
+        // the course's two coins, baked the way the game bakes static objects
+        let crel = "Phive/StaticCompoundBody/Course/Test_A_00.Nin_Ounce_NVN2.bphsc.zs";
+        let shipped = crate::phive::tests::sample(&[(1, [0.0; 3]), (2, [5.0, 0.0, 0.0])], 0.5);
+        write_atomic(&dir.join("romfs").join(crel), &compress(&shipped).unwrap()).unwrap();
+        let other = "Phive/StaticCompoundBody/Course/Other_A_00.Nin_Ounce_NVN2.bphsc.zs";
+        write_atomic(&dir.join("romfs").join(other), &compress(&crate::phive::tests::sample(&[(900, [0.0; 3])], 0.5)).unwrap()).unwrap();
+        let table_rel = "System/Resource/ResourceSizeTable.Product.100.rsizetable.zs";
+        let mut table = ResourceSizeTable::parse(&read_file(&dir.join("romfs").join(table_rel)).unwrap()).unwrap();
+        table.set(crel, needed_size(crel, &shipped));
+        write_atomic(&dir.join("romfs").join(table_rel), &compress(&table.to_bytes()).unwrap()).unwrap();
+        let ws = Workspace { romfs: dir.join("romfs"), mods_root: dir.join("mods") };
+        let l = ws.load(rel, None).unwrap();
+        assert_eq!(ws.collision_files(rel, &l.doc), [crel]);
+        let in_mod = dir.join("mods/Mod/romfs");
+
+        // unchanged: no collision file in the mod
+        let r = ws.save(rel, &l.doc, None, "Mod", &HashSet::new(), None);
+        assert!(r.ok && r.written == [rel] && r.warnings.is_empty(), "{r:?}");
+
+        // a coin moved: the collision file comes along, at the same size
+        let mut doc = l.doc.clone();
+        doc.array_mut("Actors")[1].insert("Translate", Byml::floats(&[5.0, 3.0, -2.0]));
+        let r = ws.save(rel, &doc, None, "Mod", &HashSet::new(), None);
+        assert!(r.ok && r.written == [rel, crel] && r.warnings.is_empty(), "{r:?}");
+        assert!(r.notes.iter().any(|n| n.contains("1 moved")), "{:?}", r.notes);
+        let sc = StaticCompound::parse(&read_file(&in_mod.join(crel)).unwrap()).unwrap();
+        assert_eq!(sc.links[1].parts[0].instance.translation.to_array(), [5.0, 3.0, -2.0]);
+        assert_eq!(sc.links[0].parts[0].instance.translation.to_array(), [0.0; 3]);
+
+        // more coins and one fewer: shapes like the others', and a larger size table entry
+        for i in 0..30 {
+            doc.array_mut("Actors").push(actor("CmnObj_Coin000_A_00", 1000 + i, [i as f32 * 3.0, 9.0, 0.0]));
+        }
+        doc.array_mut("Actors").remove(0);
+        let r = ws.save(rel, &doc, None, "Mod", &HashSet::new(), None);
+        assert!(r.ok && r.written == [rel, crel, table_rel] && r.warnings.is_empty(), "{r:?}");
+        let data = read_file(&in_mod.join(crel)).unwrap();
+        let sc = StaticCompound::parse(&data).unwrap();
+        sc.check_trees().unwrap();
+        assert_eq!(sc.links.len(), 31);
+        assert!(sc.links.iter().all(|l| l.hash != 1 && l.parts.len() == 1));
+        let table = ResourceSizeTable::parse(&read_file(&in_mod.join(table_rel)).unwrap()).unwrap();
+        assert_eq!(table.get(crel), Some(required_collision_size(data.len(), 1)));
+        assert!(data.len() > shipped.len());
+
+        // back to the game's course: the mod's collision file goes
+        let r = ws.save(rel, &l.doc, None, "Mod", &HashSet::new(), None);
+        assert!(r.ok && r.written == [rel] && !in_mod.join(crel).exists(), "{r:?}");
+        assert!(r.notes.iter().any(|n| n.contains("removed")), "{:?}", r.notes);
+
+        // a collision file the editor cannot read is left alone, with a warning
+        write_atomic(&dir.join("romfs").join(crel), &compress(&shipped[..shipped.len() - 40]).unwrap()).unwrap();
+        let r = ws.save(rel, &doc, None, "Mod", &HashSet::new(), None);
+        assert!(r.ok && r.written == [rel], "{r:?}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

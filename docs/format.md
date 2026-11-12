@@ -13,6 +13,7 @@ emulator (see [testing.md](testing.md)).
 | `Banc/PathAdditionalData/<Course>.byml` | Per-point values (width, clearance) keyed by point hash |
 | `Banc/World_Game03/WorldResident.bcett.byml.zs` | Where the stage models of the open world are placed |
 | `Banc/Rainbow_00_Fix.bcett.byml.zs` | Rainbow Road's sky sections |
+| `Phive/StaticCompoundBody/Course/<Course>.Nin_Ounce_NVN2.bphsc.zs` | The collision of the course's static objects, baked at the places they shipped at (see [Baked collision](#baked-collision)) |
 | `System/Resource/ResourceSizeTable.Product.*.rsizetable.zs` | How much memory the game reserves for each file |
 | `RSDB/*.rstbl.byml.zs` | Tables of object types (`Actor`), parameters (`BancParam`), path types (`GraphRailDefine`) and courses (`Course`) |
 | `System/GymlArchive/*.sarc.zs` | Per-type parameter files (models, bounds, `BancTransOffset`) |
@@ -43,7 +44,7 @@ file and spawns its objects (in game).
 | `Dynamic` | Parameters, typed by the RSDB `BancParam` table | data: all 322 parameter names stored with their table type; enums are stored as their s32 index |
 | `Links` | `{Src, Dst, Name, Gyaml}` signals to other objects or points | code: read (0x297fa0, 0x29a090) |
 | `IsGridify`, `Bakeable`, `ScreenSetting`, `PrimitiveType`, `ParentPrefab` | Placement flags | code: each is read |
-| `SRTHash`, `InstanceId` | Not used by the game | code: neither string, nor its CRC32/Murmur3/xxHash32/FNV-1a hash, appears in main, sdk or the subsdks |
+| `SRTHash`, `InstanceId` | Not read from the course file | code: neither string, nor its CRC32/Murmur3/xxHash32/FNV-1a hash, appears in main, sdk or the subsdks. The baked collision file stores each object's `SRTHash` next to its `Hash`; 8% of the shipped ones differ from the course file's, so nothing can depend on them matching (data) |
 
 Stored positions already include the type's `BancTransOffset` (data: every item box sits 1.50 m
 above the road, its offset, and coins about 1.2 m). The game registers `BancTransOffset` only as
@@ -105,11 +106,101 @@ The game reserves memory for each file from this table. Nintendo's entries follo
 pattern (data: all 1,311 Banc entries):
 
 - `.bcett.byml`: decompressed size + 1024;
-- plain `.byml` (PathAdditionalData): decompressed size rounded up to 32, + 288.
+- plain `.byml` (PathAdditionalData): decompressed size rounded up to 32, + 288;
+- `.bphsc` (baked collision): decompressed size rounded up to 32, + 2720, + 320 for each body
+  in the file (data: all 2,045 entries checked, every course, mission and stage file and one
+  open-world tile in 16).
 
 Entries are a CRC32 of the path without `.zs`, plus a short table of full paths for names whose
 CRC32 collides. The editor writes the table into the mod only when a file outgrew its entry,
 and only raises entries; the table rewrites byte-identically (data).
+
+## Baked collision
+
+Moving an arrow sign in the course file moves what you see, and nothing you hit: the game
+takes the collision of static objects from a file baked per course, `Phive/StaticCompoundBody/
+Course/<Course>.Nin_Ounce_NVN2.bphsc.zs`, where every such object's shape sits at the place it
+had when Nintendo built the game. So the editor rewrites that file whenever one of these
+objects moves, goes or is added.
+
+Which objects (data: the 341 course collision files against their course files, 134,000
+objects with physics):
+
+- Objects whose type has a physics component (`PhysicsRef` in its ActorGParam) are listed in
+  the file by their `Hash` (all but 404 of them), and no other object is.
+- An object's shapes are baked when its type has `IsUseStaticCompound` in its ActorInfo: signs,
+  grandstand platforms, barriers, flags, ramps, and the rescue and valley areas (33,301 of the
+  33,329 baked objects; the other 28 are of one type). The course file's `Bakeable` key does
+  not decide it: flags and areas are baked without it. No object of such a type is listed
+  without shapes, so nothing suggests the game can make their collision by itself. The other
+  objects with physics (fences, boxes, cones: 101,018) are listed without shapes and carry
+  their own collision.
+- A baked shape has the object's `Translate` exactly, the quaternion of its `Rotate`, and its
+  `Scale` (all 33,429 shapes checked), also when an object has several shapes.
+
+The file is a Phive container (`Phive`, then a table of section offsets and sizes; sections
+are aligned to 16):
+
+| Section | Holds |
+|---|---|
+| 0 | Fixed-size tables that seem to name the collision layers with a body (kept as they are) |
+| 1 | One 32-byte link per listed object, sorted by type name: first and last index of its shapes in section 4 (−1 when it has none), `Hash`, `SRTHash` |
+| 2, 3 | A hash table over the links: twice as many 8-byte slots as links, a link sits at `Hash` modulo the slot count or in the next free slot; section 3 has the link index of each slot |
+| 4 | One 20-byte entry per baked shape: its own index, its collision layer, its link, its index in its body, and its first material and material count in sections 5 and 6 |
+| 5, 6 | Material tables, 16 bytes per row |
+| 7 to 10 | Not used for a course's objects (kept as they are) |
+| 11 on | One Havok tagfile per body: one per collision layer in use, such as the ground layer and the rescue areas' sensor layer |
+
+Each body is a `hknpCompoundShape`. Its instances (`hknpShapeInstance`, 64 bytes) hold a
+rotation, translation, flags and scale, a `shapeTag` that is the index of the shape's entry in
+section 4, and a relative pointer to the shape itself, which is stored once per body however
+many objects use it. Flag 0x04 marks a rotation and 0x08 a scale other than 1. Collision
+queries walk a tree of boxes over the instances (`hkcdSimdTree`: 128-byte nodes with four
+children each, node 0 unused, node 1 the root), so a moved instance needs its box in the tree
+changed too. The body also stores the union of the boxes, a bounding radius, the bits needed
+to number its instances, and an estimate of its shape keys (the sum over its instances of
+2^`numShapeKeyBits` of the shape, or of a nested compound's own estimate).
+
+An instance's box is the box of the eight transformed corners of the shape's own box for
+meshes, nested compounds and unscaled boxes; the vertices plus the radius for unscaled
+capsules and spheres; and for scaled boxes, the box of the vertices after moving them so that
+the rounded surface scales while the radius stays. The editor reproduces 38,937 of the 38,964
+shipped boxes this way; the rest are scaled capsules and other convex shapes, for which it
+writes a box that is never smaller than the game's.
+
+Tagfiles describe their own types, so the editor finds every field by name in the file's type
+section rather than at a fixed offset, and refuses a file whose types are not laid out as
+expected.
+
+How this was checked (data): every one of those 2,045 files is rebuilt byte for byte from the
+editor's model of it (links, hash table, entries, instances); every shipped tree follows the
+rules the editor's own trees are built by; and after an edit the file is read back and checked
+against the same rules before it is written. The editor's changes have not yet been tried in
+game: `mkw-emutest collision` is the test for that (see [testing.md](testing.md)).
+
+What the editor does on save, always starting from the game's file:
+
+- **Moved, turned or scaled object**: its shapes get the new placement and the tree is
+  rebuilt. The tree fits where the old one was, so the file keeps its size.
+- **Deleted object**: its shapes and its link go. A body cannot be left empty, so when the
+  last shapes of a body are deleted (say, every rescue area of a course) they are lowered
+  1 km instead, out of reach, with their link kept; shipped files have links to objects
+  that are not in their course too (371 of them).
+- **New object**: it gets the shapes of another object of its type in the same file. For a type
+  the course has none of, the shape is copied in from another course's collision file, with
+  its materials; that needs the file to have a body for the shape's collision layer already,
+  and the save warns when it does not, since the object will then have no collision.
+- **Unchanged again**: the mod's copy of the collision file is removed.
+
+A course's objects can be baked in more than one file (345 files in all): a
+race also has a `RaceStage_*` file, and two have a `Mission_*` one. 28 of the files hold the
+objects in another frame, relative to the stage instead of the world. Nothing in a file names
+the course it belongs to or its frame, so the editor finds the files by the objects' hashes
+and works the frame out from the shipped data: the one rotation and offset that carry every
+object of the game's course file onto its baked shapes (data: one frame fits every file).
+
+Not handled: the collision of the stage model itself and of the open world (other files),
+and new shapes that no shipped course bakes.
 
 ## Models and textures
 

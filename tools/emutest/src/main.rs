@@ -51,7 +51,7 @@ usage: mkw-emutest --dump DIR --eden EDEN_CLI --keys PROD_KEYS --out DIR [option
   --mods-only        write each scenario's mod to <out>/<scenario>/mod and stop (no emulator)
   --classify PNG...  print what the title and race detectors see in saved screenshots
 
-scenarios: baseline visible stress (default: all three)";
+scenarios: baseline visible stress collision (default: all four)";
 
 struct Opts {
     dump: PathBuf,
@@ -322,7 +322,8 @@ fn run_scenario(o: &Opts, sc: Scenario, profile: &Profile, cat: &Catalog, ground
         "race_reached": race_at.is_some(),
         "race_hud_while_driving": hud_frames * 2 >= drive.len(),
         "emulator_alive_after_driving": alive,
-        "race_frames_moving": mean_motion > 1.5 && dark < drive.len() / 2,
+        // the collision scenario holds the kart at a wall, so its picture may well stand still
+        "race_frames_moving": (sc == Scenario::Collision || mean_motion > 1.5) && dark < drive.len() / 2,
     });
     let pass = checks.as_object().unwrap().values().all(|v| v == true);
     let report = json!({

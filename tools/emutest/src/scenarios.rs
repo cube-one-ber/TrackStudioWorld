@@ -18,6 +18,11 @@ pub const MOD_NAME: &str = "EmuTest";
 const ITEM_BOX: &str = "CmnObj_ItemBox000_A_00";
 const COIN: &str = "CmnObj_Coin000_A_00";
 const NEW_TYPE: &str = "CmnObj_Coin000_A_01";
+/// Roadside signs whose collision the game takes from the course's baked collision file.
+const SIGNS: [&str; 2] = ["CmnObj_ArrowElectric000_L_00", "CmnObj_ArrowElectric000_R_00"];
+/// Width of one sign's collision, and how far it reaches along the road.
+const SIGN_WIDTH: f32 = 8.0;
+const SIGN_DEPTH: f32 = 2.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scenario {
@@ -30,6 +35,11 @@ pub enum Scenario {
     /// object type for this course, inserted and deleted path points, a new linked route,
     /// a reversed path and a changed object type.
     Stress,
+    /// Baked collision: the course's arrow signs moved into a wall across the road in front of
+    /// the player's grid slot. The signs' collision is not in the course file; it only moves
+    /// with them if the collision file was rewritten too, and then the kart is held at the
+    /// wall.
+    Collision,
 }
 
 impl Scenario {
@@ -38,6 +48,7 @@ impl Scenario {
             "baseline" => Scenario::Baseline,
             "visible" => Scenario::Visible,
             "stress" => Scenario::Stress,
+            "collision" => Scenario::Collision,
             _ => return None,
         })
     }
@@ -47,10 +58,11 @@ impl Scenario {
             Scenario::Baseline => "baseline",
             Scenario::Visible => "visible",
             Scenario::Stress => "stress",
+            Scenario::Collision => "collision",
         }
     }
 
-    pub const ALL: [Scenario; 3] = [Scenario::Baseline, Scenario::Visible, Scenario::Stress];
+    pub const ALL: [Scenario; 4] = [Scenario::Baseline, Scenario::Visible, Scenario::Stress, Scenario::Collision];
 
     /// Write the scenario's mod into `ws.mods_root/MOD_NAME`. Returns a description of what was
     /// changed (for the report), or None for the baseline.
@@ -151,10 +163,44 @@ impl Scenario {
                     notes.push("a CmnObj_WoodBox000_A_00 changed into CmnObj_Drum000_A_00".into());
                 }
             }
+            Scenario::Collision => {
+                let (pos, rot) = start;
+                let (fwd, right) = (rot * Vec3::Z, rot * Vec3::X);
+                let signs: Vec<u64> = doc.actors().iter().filter(|a| SIGNS.contains(&a.str_or("Name", ""))).map(hash_of).collect();
+                if signs.is_empty() {
+                    return Err("the course has no arrow signs".into());
+                }
+                // the first place ahead of the player where the wall stands clear of every kart
+                let grid: Vec<f32> = doc
+                    .actors()
+                    .iter()
+                    .filter(|a| a.str_or("Name", "") == "StartPosition")
+                    .map(|a| (Vec3::from(vec3(a.get("Translate"), [0.0; 3])) - pos).dot(fwd))
+                    .collect();
+                let clear = |d: f32| grid.iter().all(|g| (g - d).abs() > SIGN_DEPTH + 2.5);
+                let ahead = (0..200).map(|i| 5.0 + 0.5 * i as f32).find(|d| clear(*d)).ok_or("no room for the wall")?;
+                for (i, h) in signs.iter().enumerate() {
+                    let (_, _, scale) = doc.transform(*h).unwrap();
+                    let side = SIGN_WIDTH * (i as f32 - (signs.len() - 1) as f32 / 2.0);
+                    doc.push_undo();
+                    doc.set_transform(*h, pos + fwd * ahead + right * side, rot, scale);
+                }
+                if let Some(g) = ground {
+                    doc.drop_to_ground(&signs, cat, &|p| g.ground_below(p));
+                }
+                notes.push(format!(
+                    "{} arrow signs moved into a wall {:.0} m wide, {ahead:.1} m in front of StartPosition 23",
+                    signs.len(),
+                    SIGN_WIDTH * signs.len() as f32
+                ));
+            }
         }
         let res = ws.save(&doc.file, &doc.root, doc.pad.as_ref(), MOD_NAME, &doc.deleted, Some(cat));
         if !res.ok {
             return Err(format!("save failed: {}", res.errors.join("; ")).into());
+        }
+        if self == Scenario::Collision && !res.written.iter().any(|w| w.ends_with(".bphsc.zs")) {
+            return Err(format!("no collision file was written: {}", res.warnings.join("; ")).into());
         }
         Ok(Some(json!({"edits": notes, "written": res.written, "notes": res.notes, "warnings": res.warnings})))
     }

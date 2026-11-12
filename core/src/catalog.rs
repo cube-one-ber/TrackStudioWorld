@@ -10,6 +10,7 @@
 //!   takes.
 
 use crate::byml::{self, Byml};
+use crate::collision::Physics;
 use crate::error::{Context, Result};
 use crate::io::read_file;
 use crate::typedjson;
@@ -19,7 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// Bump when `CatalogData` or how it is built changes, so old caches are rebuilt.
-const CACHE_VERSION: u32 = 4;
+const CACHE_VERSION: u32 = 5;
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub struct ActorInfo {
@@ -37,6 +38,13 @@ pub struct ActorInfo {
     pub template: Option<Value>,
     /// placed in at least one shipped course
     pub placed: bool,
+    /// what the type does for collision in game
+    #[serde(default)]
+    pub physics: Physics,
+    /// for baked types: a shipped collision file with the type's shapes, and the `Hash` of an
+    /// object in it that has them
+    #[serde(default)]
+    pub collision: Option<(String, u64)>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -349,7 +357,52 @@ fn build(romfs: &Path, progress: &dyn Fn(&str)) -> Result<CatalogData> {
             a.placed = true;
         }
     }
+    progress("Surveying baked collision…");
+    for (n, donor) in survey_collision(romfs) {
+        if let Some(a) = actors.get_mut(&n).filter(|a| a.physics == Physics::Baked) {
+            a.collision = Some(donor);
+        }
+    }
     Ok(CatalogData { stamp: vec![], actors, params, rails, courses, stages, seen_values: survey.seen_values, collects })
+}
+
+/// For each object type some course bakes: a collision file that has its shapes, and the
+/// `Hash` of an object of the type in it. New objects of a type their course has no example
+/// of get their shapes from there.
+fn survey_collision(romfs: &Path) -> BTreeMap<String, (String, u64)> {
+    let dir = "Phive/StaticCompoundBody/Course";
+    let bancs: BTreeMap<String, String> = banc_files(romfs).into_iter().map(|rel| (crate::banc::course_base(&rel), rel)).collect();
+    let files: Vec<(String, String)> = crate::io::files_under(&romfs.join(dir))
+        .into_iter()
+        .filter(|f| f.ends_with(".bphsc.zs"))
+        .filter_map(|f| bancs.get(f.split('.').next().unwrap_or("")).map(|banc| (format!("{dir}/{f}"), banc.clone())))
+        .collect();
+    let one = |(file, banc): &(String, String)| -> Option<Vec<(String, (String, u64))>> {
+        let baked: BTreeSet<u64> =
+            crate::phive::links_of(&read_file(&romfs.join(file)).ok()?).ok()?.into_iter().filter(|l| l.1).map(|l| l.0).collect();
+        let (doc, _) = byml::from_bytes(&read_file(&romfs.join(banc)).ok()?).ok()?;
+        let mut seen = BTreeSet::new();
+        let actors = doc.array("Actors").iter().filter(|a| baked.contains(&crate::banc::hash_of(a)));
+        Some(
+            actors
+                .filter(|a| seen.insert(a.str_or("Name", "").to_string()))
+                .map(|a| (a.str_or("Name", "").to_string(), (file.clone(), crate::banc::hash_of(a))))
+                .collect(),
+        )
+    };
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(12);
+    let found: Vec<Vec<(String, (String, u64))>> = std::thread::scope(|s| {
+        let handles: Vec<_> = files
+            .chunks(files.len().div_ceil(threads).max(1))
+            .map(|chunk| s.spawn(move || chunk.iter().filter_map(one).collect::<Vec<_>>()))
+            .collect();
+        handles.into_iter().flat_map(|h| h.join().expect("survey thread panicked")).collect()
+    });
+    let mut out = BTreeMap::new();
+    for (name, donor) in found.into_iter().flatten() {
+        out.entry(name).or_insert(donor);
+    }
+    out
 }
 
 /// Every object type: RSDB `Actor` rows plus any ActorGParam file without a row.
@@ -388,6 +441,13 @@ fn read_actors(romfs: &Path, gyml: &GymlArchive) -> BTreeMap<String, ActorInfo> 
             a.aabb = Some([mn, mx]);
         }
         a.banc_offset = vec3_xyz(gp.get("BancTransOffset"));
+        a.physics = if info.get("IsUseStaticCompound").and_then(|v| v.as_bool()) == Some(true) {
+            Physics::Baked
+        } else if comps.get("PhysicsRef").and_then(|v| v.as_str()).is_some_and(|r| !r.is_empty()) {
+            Physics::Own
+        } else {
+            Physics::None
+        };
     }
     actors
 }

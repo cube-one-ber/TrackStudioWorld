@@ -26,6 +26,7 @@ print that they skipped.
 |---|---|
 | `core.rs` | Every BYML file under `Banc/` rewrites byte-identically (1,305 of 1,311; the 6 `Banc/PathByml` files come from another writer and read back identically); typed JSON round trips; rebuilding the summaries changes no shipped course; every shipped course passes the save checks; the size-table formula matches every entry and the table rewrites identically; route points have path data (99.6%) and no other point does; no shipped course gives a Problems-panel warning |
 | `editing.rs` | Edit sessions on Mario Bros. Circuit: move, duplicate, delete, add, drop to ground on the real stage mesh, insert and delete points (with links into a deleted point retargeted), new path, link, undo and redo, reversing twice; saving and re-reading with the summaries, path-data pruning and unique hashes; size-table growth; refusing duplicate hashes, unsafe paths and bad mod names; the ns2jb-modloader export; the path tools: orienting the shipped lap and route points reproduces them (median 3.3° heading, 0.7° up), split then join restores a lap path, a pasted lap graph links only to itself, and extending, placing coins and saving give a valid mod |
+| `collision.rs` | Every baked collision file of the courses, missions and stages, and one open-world tile in 16 (2,045 files), is rebuilt byte for byte; their trees, boxes, flags and counts follow the rules the editor writes by (38,937 of 38,964 instance boxes reproduced, the rest covered); every item of every body is reached by the pointer walk; the size-table formula matches every entry; syncing an unedited course changes nothing in any of its 345 collision files, 28 of them in the stage's frame; and on Mario Bros. Circuit a moved sign, a turned and scaled one, a deleted grandstand, a copied sign, a type brought in from another course and every rescue area deleted all read back as intended from the three files that bake the course |
 | `models.rs` | Every model under `Model/` parses (5,827 files; the 1,024 `.anim.bfres` files hold no geometry); Mario Bros. Circuit's stage bounds match its ActorInfo; the item box gets its albedo texture; every albedo texture a model uses decodes (6,457) |
 
 ## 3. In game: `mkw-emutest`
@@ -64,8 +65,12 @@ It is capped at 6 GB of memory through `systemd-run` (`--memory-max`).
 | `baseline` | none |
 | `visible` | 3 new item boxes 6 m in front of the player's grid slot (`StartPosition` 23), and the 7-box item row ahead of the grid lifted 6 m |
 | `stress` | 640 new coins behind the grid (the course file outgrows its size-table entry), a type the course never had and whose count the game checks (`CmnObj_Coin000_A_01`), a lap point inserted, a linked route point deleted, a new route linked from another, an object changed into another type |
+| `collision` | the course's 7 arrow signs moved into a wall across the road in front of the grid. Their collision is baked in another file, which the save rewrites; the kart should be held at the wall |
 
 `--mods-only` writes the mods and stops, to inspect them without the emulator.
+
+The `collision` scenario has not been run yet. Its report does not require the picture to keep
+changing, since a kart held at the wall may leave it still; look at `sheet-drive.png`.
 
 ### Checks
 

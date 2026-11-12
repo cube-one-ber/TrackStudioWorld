@@ -28,6 +28,10 @@ Qt Quick 3D, bridged with CXX-Qt.
   off-road and pull paths. Points, Bézier handles, checkpoint rectangles and per-point
   parameters are editable, and points can be inserted, deleted and linked.
 - **Path data** (`Banc/PathAdditionalData`): per-point width and clearance values.
+- **Baked collision** (`Phive/StaticCompoundBody`): the game keeps the collision of signs,
+  grandstands, barriers, flags and areas in a file baked per course, not with the object. When
+  such an object is moved, deleted or added, its collision is moved, removed or added there
+  too.
 
 Any course file opens: races, the routes between courses, knockout rallies, battles, missions,
 parades and the free-roam grid cells. Stage models are drawn where the game places them, and
@@ -36,7 +40,8 @@ objects with their real models.
 On save the editor rebuilds the counts the game reads to decide which systems a course needs
 (`CountActor`, `CountRail`, `Collects`), grows `AABB` over moved objects, refuses duplicate
 hashes, writes BYML exactly the way Nintendo's tools do (an unedited course saves
-byte-identical), and raises the resource size table only when a file outgrew its entry.
+byte-identical), brings the course's baked collision in step with its objects, and raises the
+resource size table only when a file outgrew its entry.
 
 ## Screenshots
 
@@ -47,7 +52,8 @@ byte-identical), and raises the resource size table only when a file outgrew its
 ## How it was checked
 
 - **Against every shipped file**: the BYML writer, the summaries, the size table and the
-  parameter types reproduce all 1,311 shipped Banc files ([docs/format.md](docs/format.md)).
+  parameter types reproduce all 1,311 shipped Banc files, and the baked collision of every
+  course is rebuilt byte for byte ([docs/format.md](docs/format.md)).
 - **Against the game's code**: the keys the loader reads, the rotation order and what the counts
   control were read from the executable ([docs/game-code.md](docs/game-code.md)).
 - **In game**: an emulator test harness boots the game with mods the editor wrote and drives
@@ -166,8 +172,10 @@ The editor writes a LayeredFS mod to `<mods>/<mod name>/romfs/`.
 - Object types never placed in a shipped course get only `IsGridify`, as there is no shipped
   placement to copy their other fields from.
 - Reversing a path doesn't rewire the links at its ends.
-- No model import, collision, camera, minimap or lighting editing. Course geometry is BFRES
-  with Havok collision, and the open world is generated from heightmaps.
+- No model import, camera, minimap or lighting editing, and no editing of the collision of
+  the course geometry itself (BFRES models with Havok collision; the open world is generated
+  from heightmaps). The baked collision of objects follows them, but has not yet been tried in
+  game, and a new object of a type no shipped course bakes gets none.
 - Models are drawn with their albedo texture only, at the most detailed level of detail;
   skinned models show in their bind pose.
 

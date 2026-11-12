@@ -21,6 +21,8 @@ Thanks for helping. A few things keep this project useful and safe to share.
 | `core/src/byml.rs`, `sarc.rs`, `restbl.rs`, `typedjson.rs`, `io.rs` | File formats |
 | `core/src/banc.rs` | Course files: names, the summaries the game reads, checks before saving |
 | `core/src/workspace.rs` | Loading courses and saving mods (emulator and ns2jb-modloader) |
+| `core/src/hktag.rs`, `phive.rs` | Havok tagfiles and the game's baked collision files |
+| `core/src/collision.rs` | Keeping a course's baked collision in step with its objects |
 | `core/src/catalog.rs` | Object types, parameter tables, path types and stage placements, cached as JSON |
 | `core/src/doc.rs` | An open course and every edit, with undo |
 | `core/src/tools.rs` | Copy and paste, path drawing and reshaping, placing along paths |

@@ -20,10 +20,14 @@ First public release.
   out-of-order checkpoints.
 - A Problems panel that checks a course against how every shipped course is built, named undo
   steps, recent courses, an unsaved-changes prompt, and Save and Test.
+- Baked collision follows the objects: moving, deleting or adding a sign, grandstand, barrier,
+  flag or area rewrites the course's `Phive/StaticCompoundBody` file, where the game keeps
+  their collision. Not yet tried in game.
 - Saves LayeredFS mods for Eden-based emulators and exports them for ns2jb-modloader on
   Switch 2, rebuilding the summaries the game reads and growing the resource size table when a
   file outgrows its entry.
 - `mkwtrack` library: BYML v7 reading and byte-exact writing, SARC, the resource size table,
-  typed JSON, the game catalog, BFRES model and BNTX texture readers and editing operations.
+  typed JSON, the game catalog, BFRES model and BNTX texture readers, Havok tagfiles and Phive
+  static compounds, and editing operations.
 - Tests: unit tests without game files, tests against every shipped file, and `mkw-emutest`,
   which checks mods in an emulator.

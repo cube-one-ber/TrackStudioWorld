@@ -89,6 +89,12 @@ impl ResourceSizeTable {
     }
 }
 
+/// The entry Nintendo's tools give a baked collision file (`.bphsc`): its decompressed size
+/// rounded up to 32, plus 2720, plus 320 for each body. Matches every shipped entry.
+pub fn required_collision_size(decompressed: usize, bodies: usize) -> u32 {
+    (((decompressed + 31) & !31) + 2720 + 320 * bodies) as u32
+}
+
 /// The size entry Nintendo's tools write for a Banc resource, from the pattern in the shipped
 /// table (it matches all 1,311 Banc entries): `.bcett.byml` = decompressed size + 1024; plain
 /// `.byml` (PathAdditionalData) = size rounded up to 32, + 288.

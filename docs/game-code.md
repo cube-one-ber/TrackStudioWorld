@@ -28,6 +28,16 @@ themselves. It describes behaviour only; no game code is reproduced here.
 `SRTHash` and `InstanceId` do not appear as strings at all. The editor still fills them in
 for new objects, in the shipped form, so its files look like Nintendo's.
 
+## Baked collision
+
+0xf0bc40 builds the name of a course's baked collision file: it copies
+`Phive/StaticCompoundBody/Course/`, appends the name it was given and then
+`.Nin_Ounce_NVN2.bphsc`, and passes the result to 0x5ce440. 0x8252c0 uses the same suffix with
+`Phive/StaticCompoundBody/`. Who calls 0xf0bc40 with which name (a race has both a `Race_*` and
+a `RaceStage_*` file) has not been traced; the editor keeps every file that bakes a course's
+objects in step. What the files hold is described in
+[format.md](format.md#baked-collision), from the files themselves.
+
 ## Rotation order
 
 After reading the three `Rotate` values, 0x29b9f0 calls sinf and cosf on each angle (with no
