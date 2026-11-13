@@ -48,7 +48,8 @@ RowLayout {
         tristate: pr.mixed
         checkState: pr.mixed ? Qt.PartiallyChecked : (pr.p.set ? pr.p.value === true : pr.p.init === true) ? Qt.Checked : Qt.Unchecked
         nextCheckState: () => checkState === Qt.Checked ? Qt.Unchecked : Qt.Checked
-        onToggled: pr.setValue(pr.p.name, pr.kind, checkState === Qt.Checked ? "true" : "false")
+        // not onToggled: a check box with a nextCheckState function never emits toggled()
+        onClicked: pr.setValue(pr.p.name, pr.kind, checkState === Qt.Checked ? "true" : "false")
     }
     QQC2.ToolButton {
         visible: pr.isBool && pr.p.set === true
