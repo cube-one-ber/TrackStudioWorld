@@ -133,11 +133,12 @@ impl Bvh {
                     if !bounds.hit(r, inv, lim) {
                         continue;
                     }
-                    for i in *start as usize..(*start + *count) as usize {
-                        if let Some(d) = ray_triangle(r, &self.tris[i])
+                    let first = *start as usize;
+                    for (i, tri) in self.tris[first..first + *count as usize].iter().enumerate() {
+                        if let Some(d) = ray_triangle(r, tri)
                             && d < best.map(|b| b.0).unwrap_or(tmax)
                         {
-                            best = Some((d, i));
+                            best = Some((d, first + i));
                         }
                     }
                 }
@@ -285,5 +286,27 @@ mod tests {
             [(-1.0, 1.0), (1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)].map(|(x, z)| Ray { origin: Vec3::new(x, 100.0, z), dir: Vec3::NEG_Y });
         let f = Frustum::from_rays(&rays);
         assert!(f.contains(Vec3::new(0.5, 0.0, -0.5)) && !f.contains(Vec3::new(1.5, 0.0, 0.0)));
+    }
+
+    #[test]
+    fn nearest_hit_and_its_normal() {
+        // a row of triangles, each at its own height and tilt, so a hit on the wrong one shows
+        let tri = |i: usize| {
+            let (x, y, slope) = (i as f32 * 10.0, i as f32, i as f32 * 0.1);
+            [Vec3::new(x - 4.0, y, -4.0), Vec3::new(x - 4.0, y, 4.0), Vec3::new(x + 4.0, y + 8.0 * slope, 0.0)]
+        };
+        let bvh = Bvh::new((0..40).map(tri).collect());
+        for i in 0..40 {
+            let t = tri(i);
+            let at = (t[0] + t[1] + t[2]) / 3.0;
+            let r = Ray { origin: Vec3::new(at.x, 100.0, at.z), dir: Vec3::NEG_Y };
+            let (d, n) = bvh.hit(&r, 1000.0).expect("a triangle under the ray");
+            let mut want = (t[1] - t[0]).cross(t[2] - t[0]).normalize();
+            if want.y < 0.0 {
+                want = -want;
+            }
+            assert!((d - (100.0 - at.y)).abs() < 1e-3 && n.distance(want) < 1e-4, "triangle {i}: {d} {n}");
+        }
+        assert!(bvh.hit(&Ray { origin: Vec3::new(-50.0, 100.0, 0.0), dir: Vec3::NEG_Y }, 1000.0).is_none());
     }
 }
