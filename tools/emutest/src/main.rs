@@ -51,7 +51,7 @@ usage: mkw-emutest --dump DIR --eden EDEN_CLI --keys PROD_KEYS --out DIR [option
   --mods-only        write each scenario's mod to <out>/<scenario>/mod and stop (no emulator)
   --classify PNG...  print what the title and race detectors see in saved screenshots
 
-scenarios: baseline visible stress collision (default: all four)";
+scenarios: baseline visible stress collision glide glide-path dash (default: all)";
 
 struct Opts {
     dump: PathBuf,

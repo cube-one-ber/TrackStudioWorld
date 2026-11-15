@@ -22,7 +22,8 @@ First public release.
   steps, recent courses, an unsaved-changes prompt, and Save and Test.
 - Baked collision follows the objects: moving, deleting or adding a sign, grandstand, barrier,
   flag or area rewrites the course's `Phive/StaticCompoundBody` file, where the game keeps
-  their collision. Not yet tried in game.
+  their collision, including sensors such as the boost of dash panels and glide ramps. Checked
+  in game.
 - Saves LayeredFS mods for Eden-based emulators and exports them for ns2jb-modloader on
   Switch 2, rebuilding the summaries the game reads and growing the resource size table when a
   file outgrows its entry.

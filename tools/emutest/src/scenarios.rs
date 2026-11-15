@@ -23,6 +23,10 @@ const SIGNS: [&str; 2] = ["CmnObj_ArrowElectric000_L_00", "CmnObj_ArrowElectric0
 /// Width of one sign's collision, and how far it reaches along the road.
 const SIGN_WIDTH: f32 = 8.0;
 const SIGN_DEPTH: f32 = 2.0;
+/// A glide ramp: the solid ramp plus a baked `Glide` sensor box. Karts drive along its local -Z.
+const GLIDE_RAMP: &str = "CmnObj_GlideRamp000_B_00";
+/// A dash panel that is only a baked `Dash` sensor box. Karts drive along its local +Z.
+const DASH_PANEL: &str = "CmnObj_DashBoard000_C_00";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scenario {
@@ -40,6 +44,13 @@ pub enum Scenario {
     /// with them if the collision file was rewritten too, and then the kart is held at the
     /// wall.
     Collision,
+    /// Baked sensors: a new glide ramp on the player's line past the front of the grid, with
+    /// no `GlidePath`. Shipped ramps nearly all have one starting on the ramp.
+    Glide,
+    /// [`Scenario::Glide`] plus a `GlidePath` from the ramp ahead, laid out like shipped ones.
+    GlidePath,
+    /// Baked sensors: a new dash panel on the player's line past the front of the grid.
+    Dash,
 }
 
 impl Scenario {
@@ -49,6 +60,9 @@ impl Scenario {
             "visible" => Scenario::Visible,
             "stress" => Scenario::Stress,
             "collision" => Scenario::Collision,
+            "glide" => Scenario::Glide,
+            "glide-path" => Scenario::GlidePath,
+            "dash" => Scenario::Dash,
             _ => return None,
         })
     }
@@ -59,10 +73,21 @@ impl Scenario {
             Scenario::Visible => "visible",
             Scenario::Stress => "stress",
             Scenario::Collision => "collision",
+            Scenario::Glide => "glide",
+            Scenario::GlidePath => "glide-path",
+            Scenario::Dash => "dash",
         }
     }
 
-    pub const ALL: [Scenario; 4] = [Scenario::Baseline, Scenario::Visible, Scenario::Stress, Scenario::Collision];
+    pub const ALL: [Scenario; 7] = [
+        Scenario::Baseline,
+        Scenario::Visible,
+        Scenario::Stress,
+        Scenario::Collision,
+        Scenario::Glide,
+        Scenario::GlidePath,
+        Scenario::Dash,
+    ];
 
     /// Write the scenario's mod into `ws.mods_root/MOD_NAME`. Returns a description of what was
     /// changed (for the report), or None for the baseline.
@@ -194,16 +219,63 @@ impl Scenario {
                     SIGN_WIDTH * signs.len() as f32
                 ));
             }
+            Scenario::Glide | Scenario::GlidePath => {
+                let (pos, rot) = start;
+                let fwd = rot * Vec3::Z;
+                let at = on_ground(ground, past_grid(&doc, pos, fwd, 15.0));
+                let h = doc.add_actor(cat, GLIDE_RAMP, at, 0.0).ok_or("glide ramp type missing from the catalog")?;
+                doc.set_transform(h, at, rot * glam::Quat::from_rotation_y(std::f32::consts::PI), Vec3::ONE);
+                notes.push(format!("{GLIDE_RAMP} on the player's line, {:.0} m ahead of StartPosition 23", (at - pos).dot(fwd)));
+                if self == Scenario::GlidePath {
+                    // shipped paths start 1.4 m above the ramp and run on for a few hundred metres
+                    let yaw = vec3(doc.find(start_hash(&doc)?).unwrap().1.get("Rotate"), [0.0; 3])[1];
+                    let mut last = doc.new_rail(cat, "GlidePath", at, yaw).ok_or("new glide path failed")?;
+                    for _ in 0..2 {
+                        last = doc.insert_point_after(last).ok_or("glide path point failed")?;
+                    }
+                    let rail = doc.rails().last().unwrap();
+                    let points: Vec<u64> = Document::points(rail).iter().map(hash_of).collect();
+                    for (i, (h, lift)) in points.iter().zip([1.4, 10.0, 6.0, 3.0]).enumerate() {
+                        let p = on_ground(ground, at + fwd * (40.0 * i as f32));
+                        doc.set_transform(*h, p + Vec3::Y * lift, rot, Vec3::ONE);
+                    }
+                    notes.push(format!("a GlidePath of {} points from the ramp, 40 m apart", points.len()));
+                }
+            }
+            Scenario::Dash => {
+                let (pos, rot) = start;
+                let fwd = rot * Vec3::Z;
+                let at = on_ground(ground, past_grid(&doc, pos, fwd, 10.0));
+                let h = doc.add_actor(cat, DASH_PANEL, at, 0.0).ok_or("dash panel type missing from the catalog")?;
+                doc.set_transform(h, at, rot, Vec3::ONE);
+                notes.push(format!("{DASH_PANEL} on the player's line, {:.0} m ahead of StartPosition 23", (at - pos).dot(fwd)));
+            }
         }
         let res = ws.save(&doc.file, &doc.root, doc.pad.as_ref(), MOD_NAME, &doc.deleted, Some(cat));
         if !res.ok {
             return Err(format!("save failed: {}", res.errors.join("; ")).into());
         }
-        if self == Scenario::Collision && !res.written.iter().any(|w| w.ends_with(".bphsc.zs")) {
+        if self != Scenario::Visible && self != Scenario::Stress && !res.written.iter().any(|w| w.ends_with(".bphsc.zs")) {
             return Err(format!("no collision file was written: {}", res.warnings.join("; ")).into());
         }
         Ok(Some(json!({"edits": notes, "written": res.written, "notes": res.notes, "warnings": res.warnings})))
     }
+}
+
+/// The point on the player's line `extra` metres past the front row of the grid.
+fn past_grid(doc: &Document, pos: Vec3, fwd: Vec3, extra: f32) -> Vec3 {
+    let front = doc
+        .actors()
+        .iter()
+        .filter(|a| a.str_or("Name", "") == "StartPosition")
+        .map(|a| (Vec3::from(vec3(a.get("Translate"), [0.0; 3])) - pos).dot(fwd))
+        .fold(0.0, f32::max);
+    pos + fwd * (front + extra)
+}
+
+/// `p` moved onto the stage surface below it, when the surface is known.
+fn on_ground(ground: Option<&Bvh>, p: Vec3) -> Vec3 {
+    ground.and_then(|g| g.ground_below(p)).map_or(p, |y| Vec3::new(p.x, y, p.z))
 }
 
 fn start_hash(doc: &Document) -> mkwtrack::Result<u64> {

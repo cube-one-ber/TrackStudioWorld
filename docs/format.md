@@ -143,7 +143,7 @@ are aligned to 16):
 
 | Section | Holds |
 |---|---|
-| 0 | Fixed-size tables that seem to name the collision layers with a body (kept as they are) |
+| 0 | Fixed-size tables that seem to name the collision layers with a body (kept as they are), then at 0xC000 eight counts: entity shapes, sensor shapes, entity bodies, sensor bodies, links, all shapes, and the rows of sections 5 and 6 (all 341 course files). The game reads them: a sensor shape past the stored count does nothing |
 | 1 | One 32-byte link per listed object, sorted by type name: first and last index of its shapes in section 4 (−1 when it has none), `Hash`, `SRTHash` |
 | 2, 3 | A hash table over the links: twice as many 8-byte slots as links, a link sits at `Hash` modulo the slot count or in the next free slot; section 3 has the link index of each slot |
 | 4 | One 20-byte entry per baked shape: its own index, its collision layer, its link, its index in its body, and its first material and material count in sections 5 and 6 |
@@ -175,8 +175,11 @@ expected.
 How this was checked (data): every one of those 2,045 files is rebuilt byte for byte from the
 editor's model of it (links, hash table, entries, instances); every shipped tree follows the
 rules the editor's own trees are built by; and after an edit the file is read back and checked
-against the same rules before it is written. The editor's changes have not yet been tried in
-game: `mkw-emutest collision` is the test for that (see [testing.md](testing.md)).
+against the same rules before it is written. In game (`mkw-emutest`, see
+[testing.md](testing.md)): moved signs hold karts at their new place, a new dash panel boosts
+and a new glide ramp launches a glide. Before the counts in section 0 were kept up to date, the
+new sensors did nothing (the ramp was solid but gave no glide) and the race with the dash panel
+never started.
 
 What the editor does on save, always starting from the game's file:
 

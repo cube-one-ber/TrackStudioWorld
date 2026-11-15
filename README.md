@@ -174,8 +174,8 @@ The editor writes a LayeredFS mod to `<mods>/<mod name>/romfs/`.
 - Reversing a path doesn't rewire the links at its ends.
 - No model import, camera, minimap or lighting editing, and no editing of the collision of
   the course geometry itself (BFRES models with Havok collision; the open world is generated
-  from heightmaps). The baked collision of objects follows them, but has not yet been tried in
-  game, and a new object of a type no shipped course bakes gets none.
+  from heightmaps). The baked collision of objects follows them (checked in game), but a new
+  object of a type no shipped course bakes gets none.
 - Models are drawn with their albedo texture only, at the most detailed level of detail;
   skinned models show in their bind pose.
 

@@ -66,11 +66,17 @@ It is capped at 6 GB of memory through `systemd-run` (`--memory-max`).
 | `visible` | 3 new item boxes 6 m in front of the player's grid slot (`StartPosition` 23), and the 7-box item row ahead of the grid lifted 6 m |
 | `stress` | 640 new coins behind the grid (the course file outgrows its size-table entry), a type the course never had and whose count the game checks (`CmnObj_Coin000_A_01`), a lap point inserted, a linked route point deleted, a new route linked from another, an object changed into another type |
 | `collision` | the course's 7 arrow signs moved into a wall across the road in front of the grid. Their collision is baked in another file, which the save rewrites; the kart should be held at the wall |
+| `glide` | a new glide ramp (`CmnObj_GlideRamp000_B_00`) on the player's line past the front of the grid: a solid ramp and a baked `Glide` sensor; the kart should open its glider |
+| `glide-path` | `glide` plus a `GlidePath` from the ramp, laid out like shipped ones |
+| `dash` | a new dash panel (`CmnObj_DashBoard000_C_00`, only a baked `Dash` sensor) on the player's line; the kart should get a boost |
 
 `--mods-only` writes the mods and stops, to inspect them without the emulator.
 
-The `collision` scenario has not been run yet. Its report does not require the picture to keep
-changing, since a kart held at the wall may leave it still; look at `sheet-drive.png`.
+Whether the edit worked is for a person to judge from the drive screenshots: the karts pile up
+at the sign wall (`collision`), the kart gets a boost on the dash panel (`dash`), and the
+glider opens at the ramp and stays open to the first corner (`glide`, `glide-path`). The
+`collision` report does not require the picture to keep changing, since a kart held at the wall
+may leave it still.
 
 ### Checks
 

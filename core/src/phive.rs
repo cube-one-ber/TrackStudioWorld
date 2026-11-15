@@ -9,7 +9,7 @@
 //!
 //! | # | Holds |
 //! |---|---|
-//! | 0 | Which collision layers have a body, in fixed-size tables (kept as it is) |
+//! | 0 | Which collision layers have a body, in fixed-size tables (kept as they are), then the file's counts at 0xC000 ([`COUNTS`]) |
 //! | 1 | Links: one per object that has physics, sorted by type name: the object's `Hash`, its `SRTHash`, and the range of its entries in section 4 (none for objects that are not baked) |
 //! | 2, 3 | A hash table over the links: twice as many slots as links, slot = hash mod slots with linear probing; section 3 gives the link index of each slot |
 //! | 4 | One entry per baked shape: its layer, its link, its index in its body, and its materials in sections 5 and 6 |
@@ -670,6 +670,10 @@ const FIRST_BODY: usize = 11;
 const LINK_SIZE: usize = 32;
 const ENTRY_SIZE: usize = 20;
 const MATERIAL_SIZE: usize = 16;
+/// Where section 0 holds the file's counts, as eight u32: entity shapes, sensor shapes, entity
+/// bodies, sensor bodies, links, all shapes, rows of material tables 5 and 6. The game reads
+/// them: a sensor shape past the stored count never fires (a new dash panel gives no boost).
+const COUNTS: usize = 0xC000;
 
 /// The objects a collision file knows, without reading its bodies: each `Hash`, and whether
 /// the object is baked.
@@ -811,6 +815,16 @@ impl StaticCompound {
         file.sections[SLOTS] = hashes;
         file.sections[SLOT_LINKS] = owners;
         file.sections[ENTRIES] = entries;
+        let parts: Vec<&Part> = self.links.iter().flat_map(|l| &l.parts).collect();
+        let sensors = parts.iter().filter(|p| p.layer & 1 == 1).count();
+        let bodies =
+            |sensor: u32| parts.iter().filter(|p| p.layer & 1 == sensor).map(|p| p.body).collect::<std::collections::BTreeSet<_>>().len();
+        let rows = |s: usize| file.sections[s].len() / MATERIAL_SIZE;
+        let counts = [parts.len() - sensors, sensors, bodies(0), bodies(1), n, parts.len(), rows(MATERIALS[0]), rows(MATERIALS[1])];
+        let at = file.sections[0].get_mut(COUNTS..COUNTS + 4 * counts.len()).ok_or_else(|| err("section 0 is too short for its counts"))?;
+        for (w, c) in at.chunks_mut(4).zip(counts) {
+            w.copy_from_slice(&(c as u32).to_le_bytes());
+        }
         let mut body_sections = file.sections.iter_mut().skip(FIRST_BODY).filter(|s| !s.is_empty());
         for (body, insts) in self.bodies.iter().zip(&per_body) {
             let section = body_sections.next().ok_or_else(|| err("a body lost its section"))?;
@@ -1132,7 +1146,7 @@ pub(crate) mod tests {
         entry.extend_from_slice(&[0; 8]);
         entry.extend_from_slice(&1u32.to_le_bytes());
         entry.resize(32, 0);
-        let mut sections = vec![vec![0xAB; 16], link, slots, vec![0; 16], entry, vec![1; 16], vec![2; 16], vec![0; 16]];
+        let mut sections = vec![vec![0xAB; COUNTS + 32], link, slots, vec![0; 16], entry, vec![1; 16], vec![2; 16], vec![0; 16]];
         sections.extend([vec![], vec![], vec![], body(Vec3::from(at), half), vec![], vec![]]);
         let file = Phive { head: [2, 2, 0xFF, 0xFE, 2, sections.len() as u8], placed: vec![true; sections.len()], sections };
         let mut sc = StaticCompound::parse(&file.to_bytes()).unwrap();
@@ -1209,6 +1223,20 @@ pub(crate) mod tests {
         // a body cannot lose every shape
         same.links.clear();
         assert!(same.to_bytes().is_err());
+    }
+
+    #[test]
+    fn counts_follow_the_shapes() {
+        let objects = grid(3);
+        let mut sc = StaticCompound::parse(&sample(&objects, 0.5)).unwrap();
+        let mut l = Link::new(55, 0);
+        l.parts.push(StaticCompound::part_like(&sc.links[0].parts[0], Vec3::ZERO, Quat::IDENTITY, Vec3::ONE));
+        sc.links.push(l);
+        sc.links.push(Link::new(56, 0));
+        let out = Phive::parse(&sc.to_bytes().unwrap()).unwrap();
+        let counts: Vec<u32> = out.sections[0][COUNTS..COUNTS + 32].chunks(4).map(|w| u32::from_le_bytes(w.try_into().unwrap())).collect();
+        let n = objects.len() as u32;
+        assert_eq!(counts, [n + 1, 0, 1, 0, n + 2, n + 1, 1, 1]);
     }
 
     #[test]
