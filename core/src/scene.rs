@@ -454,9 +454,8 @@ pub fn stage_bvh(stages: &[StagePlacement], model: impl Fn(&str) -> Option<Arc<M
     Bvh::new(tris)
 }
 
-/// Stage models near a course, nearest first (at most `max`), skipping backdrops over 5 km
-/// and stages the course file places itself (those draw as objects).
-pub fn stages_for<'a>(cat: &'a Catalog, doc: &Byml, max: usize) -> Vec<&'a StagePlacement> {
+/// Where a course file has things: its objects, path points and the corners of its `AABB`.
+pub fn course_points(doc: &Byml) -> Vec<[f32; 3]> {
     let mut pts: Vec<[f32; 3]> = doc.array("Actors").iter().map(|a| a.vec3("Translate", [0.0; 3])).collect();
     for r in doc.array("Rails") {
         pts.extend(r.array("Points").iter().map(|p| p.vec3("Translation", [0.0; 3])));
@@ -465,6 +464,13 @@ pub fn stages_for<'a>(cat: &'a Catalog, doc: &Byml, max: usize) -> Vec<&'a Stage
         pts.push(a.vec3("Min", [0.0; 3]));
         pts.push(a.vec3("Max", [0.0; 3]));
     }
+    pts
+}
+
+/// Stage models near a course, nearest first (at most `max`), skipping backdrops over 5 km
+/// and stages the course file places itself (those draw as objects).
+pub fn stages_for<'a>(cat: &'a Catalog, doc: &Byml, max: usize) -> Vec<&'a StagePlacement> {
+    let pts = course_points(doc);
     if pts.is_empty() {
         return vec![];
     }

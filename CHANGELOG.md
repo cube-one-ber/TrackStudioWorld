@@ -14,6 +14,9 @@ First public release.
 - Path tools: draw with Alt+Click and extrude, connect, split, join, orient along the path,
   smooth, straighten, subdivide, draggable curve handles, new paths as a point, line, curve or
   loop, change path type and place objects along a path.
+- The open world's terrain under each course, read from the game's terrain tiles and
+  coloured with its ground colour map (View → Terrain). Drop to Ground and path drawing land
+  on it too.
 - Lap checkpoints: a Checkpoint box for lap points, numbers kept in order along the lap after
   every edit and on save (by the rule every shipped course follows), checkpoint, start, lap
   check and goal gates drawn apart from the rest, and checks for missing, unnumbered and

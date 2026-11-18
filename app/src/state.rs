@@ -12,12 +12,18 @@ use mkwtrack::math::quat_zyx;
 use mkwtrack::model::Model;
 use mkwtrack::raycast::{Bvh, Frustum, Ray, ray_line_param, ray_plane};
 use mkwtrack::scene::{self, Scene, ViewOptions, stages_for};
+use mkwtrack::terrain;
 use mkwtrack::tools::Clipboard;
 use mkwtrack::typedjson;
 use mkwtrack::workspace::Workspace;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
+
+/// Stage name of the open world's ground in `State::stages` (see [`terrain`]).
+pub const TERRAIN: &str = "Terrain";
+/// Metres of ground shown around a course's objects and paths.
+const TERRAIN_MARGIN: f32 = 400.0;
 
 #[derive(Default)]
 pub struct ModelCache {
@@ -78,6 +84,7 @@ pub struct State {
     pub xray: bool,
     pub snap_ground: bool,
     pub show_stage: bool,
+    pub show_terrain: bool,
     pub expanded: HashSet<String>,
     pub scene: Option<Scene>,
     pub models: Arc<ModelCache>,
@@ -132,6 +139,7 @@ impl State {
             xray: true,
             snap_ground: false,
             show_stage: true,
+            show_terrain: true,
             expanded: HashSet::new(),
             scene: None,
             models: Arc::new(ModelCache::default()),
@@ -206,6 +214,21 @@ impl State {
         let loaded = self.ws().load(file, m)?;
         let doc = Document::new(loaded);
         self.stages = stages_for(&cat, &doc.root, 12).into_iter().cloned().collect();
+        // the open world's ground goes first, so it shows while the stage models load
+        if let Some(region) = terrain::region_around(&scene::course_points(&doc.root), TERRAIN_MARGIN) {
+            self.stages.insert(
+                0,
+                StagePlacement {
+                    name: TERRAIN.into(),
+                    source: String::new(),
+                    model: Some(terrain::model_key(region)),
+                    aabb: None,
+                    translate: [0.0; 3],
+                    rotate: [0.0; 3],
+                    scale: [1.0; 3],
+                },
+            );
+        }
         self.doc = Some(doc);
         self.selection.clear();
         self.expanded.clear();
@@ -223,11 +246,12 @@ impl State {
         let d = self.doc.as_ref().unwrap();
         let pts: usize = d.rails().iter().map(|r| Document::points(r).len()).sum();
         self.log(format!(
-            "Opened {file}{}: {} objects, {} paths, {pts} points, {} stage model(s)",
+            "Opened {file}{}: {} objects, {} paths, {pts} points, {} stage model(s){}",
             if d.from_mod { format!(" from mod \"{}\"", self.mod_name) } else { String::new() },
             d.actors().len(),
             d.rails().len(),
-            self.stages.len()
+            self.stages.iter().filter(|s| s.name != TERRAIN).count(),
+            if self.stages.iter().any(|s| s.name == TERRAIN) { ", terrain" } else { "" }
         ));
         Ok(())
     }
@@ -264,10 +288,11 @@ impl State {
     // ------------------------------------------------------------ scene JSON
 
     pub fn stages_json(&self) -> Value {
-        if !self.show_stage {
-            return json!([]);
-        }
         json!(self.stages.iter().filter_map(|s| {
+            let shown = if s.name == TERRAIN { self.show_terrain } else { self.show_stage };
+            if !shown {
+                return None;
+            }
             let m = s.model.as_ref()?;
             let model = self.models.get(m)?;
             Some(json!({"rel": m, "name": s.name, "parts": model.parts.len(), "p": s.translate, "q": q4(quat_zyx(s.rotate)), "s": s.scale}))
@@ -1168,7 +1193,7 @@ impl State {
         cats.sort();
         json!({"rails": rails.iter().map(|r| json!({"name": r, "visible": !self.view.hidden_rail_types.contains(*r), "color": scene::hex(scene::rail_color(r))})).collect::<Vec<_>>(),
                "categories": cats.iter().map(|c| json!({"name": c, "visible": !self.view.hidden_categories.contains(c), "color": scene::hex(scene::category_color(c))})).collect::<Vec<_>>(),
-               "stage": self.show_stage, "models": self.view.models, "xray": self.xray, "widths": self.view.widths, "snap": self.snap_ground,
+               "stage": self.show_stage, "terrain": self.show_terrain, "models": self.view.models, "xray": self.xray, "widths": self.view.widths, "snap": self.snap_ground,
                "pickFilter": self.pick_filter, "snapStep": self.snap.step, "snapAngle": self.snap.angle,
                "hidden": self.view.hidden_items.len() + self.view.hidden_rails.len() + self.view.hidden_actor_names.len() + self.view.hidden_rail_types.len() + self.view.hidden_categories.len()})
     }

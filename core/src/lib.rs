@@ -11,6 +11,7 @@
 //!   reshaping, placing along paths; [`checkpoints`]: lap checkpoint numbering; [`check`]: the
 //!   course checks the Problems panel lists.
 //! * [`bfres`], [`bntx`], [`model`]: the game's models and textures, read from the romfs.
+//! * [`terrain`]: the open world's terrain under a course, from the game's terrain tiles.
 //! * [`math`], [`raycast`], [`scene`]: transforms, picking and what the viewport draws.
 
 pub mod banc;
@@ -32,6 +33,7 @@ pub mod raycast;
 pub mod restbl;
 pub mod sarc;
 pub mod scene;
+pub mod terrain;
 pub mod tools;
 pub mod typedjson;
 pub mod workspace;

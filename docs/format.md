@@ -228,6 +228,37 @@ gives, `ModelAABBMin` and `ModelAABBMax`, to within a metre).
   ordered as the Orin TRM describes. Albedo textures are ASTC 6x6 or 8x8, mostly sRGB (data:
   all 6,457 that models use decode).
 
+## Open-world terrain
+
+The viewport draws the open world's terrain under a course from the game's terrain tiles.
+
+- `TerrainArc/Game03_Proc.tscb` lists 6,448 tiles of a quadtree. Its header has the scale
+  (250.0, metres per unit) at 0x10, the max height (2000.0) at 0x14, the tile count at 0x38
+  and, at 0x78, the offset of a table of offsets to the tiles (offsets count from where they
+  are stored). A tile starts with its centre X, Z and size in units; +0x60 is the offset of its
+  name. The root is 64 units (16 km) centred on the origin, the finest tiles 0.5 units.
+  Not every tile is split into all four quarters: a quarter with no smaller tile is drawn from
+  its parent (data: drawn that way, the tiles cover the root exactly once).
+  From 0x114 the file lists its layers, 0x80 bytes each: offsets to the layer name, file
+  extension and resource name, then at +0x30 the width and at +0x34 the margin. The `height`
+  layer (`hght`, `HeightMapResource`) is 256 wide with a margin of 2; the game reads these
+  fields by those names.
+- `TerrainArc/Game03_Proc/<name>.hght` is a TARB file (`TARB`, header size at 0xa, then one
+  zstd frame) holding 287,316 bytes in every tile. The offset at 0x2c (from 0x2c) and the size at
+  0x30 place a 260 x 260 R16 surface, block linear with Orin GOBs one GOB high, rows along +Z.
+  That is the layer's width plus its margin on each side: sample `i` sits at
+  `tile min + (i - 2) * size / 256`, so samples 2 to 258 span the tile; a sample is
+  `value / 65536 * max height` metres and 0 is a hole (data: at that placement the open
+  world's objects land within 5 cm of the terrain more than at any other, and half a sample
+  off clearly fewer). The section at 0x1c holds 4-bit planes of the same 260 x 260 grid
+  that the heights do not need; what they are is unknown.
+- Under the stage models the terrain is lowered, typically 10 to 60 m below the course
+  (data: Mario Bros. Circuit, Choco Mountain, Toad Factory).
+- `Tex/Map_Height_*` is a separate 16 km heightmap quadtree (R16G16, depth 4, 2 m texels).
+  Its G channel follows the stage models' surfaces as well as the terrain, so it is not the
+  terrain. `Map_GroundColor_Root_GroundColor` (2048 x 2048, BC1) colours the same square; the
+  viewport uses it as the terrain's texture.
+
 ## Mods
 
 The editor saves a LayeredFS mod: `<mods>/<mod name>/romfs/` with only the changed files.

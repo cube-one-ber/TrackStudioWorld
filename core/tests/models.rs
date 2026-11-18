@@ -110,3 +110,27 @@ fn texture_decodes_to_the_expected_image() {
     let small = bntx::load(&romfs, "CmnObj_ItemBox000_Body_Symbol_Alb", 64).unwrap();
     assert!(small.width <= 64 && small.height <= 64 && small.width * 2 > 64, "{}x{}", small.width, small.height);
 }
+
+#[test]
+fn open_world_objects_sit_on_the_terrain() {
+    use mkwtrack::{byml, raycast::Bvh, terrain};
+    let Some(romfs) = common::romfs() else { return };
+    let rel = "Banc/World_Game03/0707.bcett.byml.zs";
+    let (doc, _) = byml::from_bytes(&mkwtrack::io::read_file(&romfs.join(rel)).unwrap()).unwrap();
+    let pts: Vec<[f32; 3]> = doc.array("Actors").iter().map(|a| a.vec3("Translate", [0.0; 3])).collect();
+    let region = terrain::region_around(&pts, 50.0).unwrap();
+    let t = std::time::Instant::now();
+    let model = terrain::load(&romfs, region, &pts).unwrap();
+    let tris =
+        model.parts.iter().flat_map(|p| p.indices.as_chunks::<3>().0.iter().map(|t| t.map(|i| p.positions[i as usize].into()))).collect();
+    let ground = Bvh::new(tris);
+    let near = |tol: f32| {
+        pts.iter()
+            .filter(|p| ground.ground_below(glam::Vec3::from(**p) + glam::Vec3::Y * 0.5).is_some_and(|y| (y - p[1]).abs() < tol))
+            .count()
+    };
+    let (on, total) = (near(0.15), pts.len());
+    println!("{rel}: {} tris in {:?}; {on} of {total} objects within 0.15 m ({} within 1 m)", ground.len(), t.elapsed(), near(1.0));
+    // objects on stage models, bridges or in the air make up the rest
+    assert!(on * 4 > total, "{on} of {total}");
+}

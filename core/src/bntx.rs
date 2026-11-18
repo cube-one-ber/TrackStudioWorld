@@ -133,7 +133,7 @@ fn gob_offset(x: usize, y: usize, orin: bool) -> usize {
 
 /// Block-linear surface (`rows` rows of `width_bytes`) to row-major bytes. Bytes past the end
 /// of `data` read as zero.
-fn untile(data: &[u8], width_bytes: usize, rows: usize, block_height: usize, orin: bool) -> Vec<u8> {
+pub(crate) fn untile(data: &[u8], width_bytes: usize, rows: usize, block_height: usize, orin: bool) -> Vec<u8> {
     let mut out = vec![0u8; width_bytes * rows];
     let gobs_wide = width_bytes.div_ceil(64);
     let block_bytes = 512 * block_height;

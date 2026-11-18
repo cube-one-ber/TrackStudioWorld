@@ -615,6 +615,7 @@ impl qobject::Editor {
         let cache = self.st().models.clone();
         let romfs = self.st().cfg.romfs.clone();
         let stages = self.st().stages.clone();
+        let course = self.st().doc.as_ref().map(|d| scene::course_points(&d.root)).unwrap_or_default();
         let generation = self.st().load_gen;
         self.as_mut().set_models_wanted(wanted.len() as i32);
         let already = wanted.iter().filter(|(m, _)| cache.has(m)).count();
@@ -638,7 +639,11 @@ impl qobject::Editor {
                     });
                 }
                 if !cache.has(rel) {
-                    match bfres::load(&romfs, rel) {
+                    let model = match mkwtrack::terrain::parse_key(rel) {
+                        Some(region) => mkwtrack::terrain::load(&romfs, region, &course),
+                        None => bfres::load(&romfs, rel),
+                    };
+                    match model {
                         Ok(m) => {
                             let mut names: Vec<String> = m.parts.iter().filter_map(|p| p.texture.clone()).collect();
                             names.sort();
@@ -1200,6 +1205,7 @@ impl qobject::Editor {
         let st = self.as_mut().stm();
         match name.to_string().as_str() {
             "stage" => st.show_stage = on,
+            "terrain" => st.show_terrain = on,
             "models" => st.view.models = on,
             "xray" => st.xray = on,
             "widths" => st.view.widths = on,

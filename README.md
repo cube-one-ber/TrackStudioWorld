@@ -34,8 +34,8 @@ Qt Quick 3D, bridged with CXX-Qt.
   too.
 
 Any course file opens: races, the routes between courses, knockout rallies, battles, missions,
-parades and the free-roam grid cells. Stage models are drawn where the game places them, and
-objects with their real models.
+parades and the free-roam grid cells. Stage models are drawn where the game places them, on
+the open world's terrain, and objects with their real models.
 
 On save the editor rebuilds the counts the game reads to decide which systems a course needs
 (`CountActor`, `CountRail`, `Collects`), grows `AABB` over moved objects, refuses duplicate
@@ -173,8 +173,8 @@ The editor writes a LayeredFS mod to `<mods>/<mod name>/romfs/`.
   placement to copy their other fields from.
 - Reversing a path doesn't rewire the links at its ends.
 - No model import, camera, minimap or lighting editing, and no editing of the collision of
-  the course geometry itself (BFRES models with Havok collision; the open world is generated
-  from heightmaps). The baked collision of objects follows them (checked in game), but a new
+  the course geometry itself (BFRES models with Havok collision) or of the open world's
+  terrain. The terrain is shown at 1 m near the course and coarser further out. The baked collision of objects follows them (checked in game), but a new
   object of a type no shipped course bakes gets none.
 - Models are drawn with their albedo texture only, at the most detailed level of detail;
   skinned models show in their bind pose.

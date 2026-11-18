@@ -12,6 +12,7 @@ QQC2.Menu {
     onAboutToShow: st = JSON.parse(editor.viewState())
 
     QQC2.MenuItem { text: "Stage models"; checkable: true; checked: menu.st.stage === true; onTriggered: menu.editor.setViewOption("stage", checked) }
+    QQC2.MenuItem { text: "Terrain"; checkable: true; checked: menu.st.terrain === true; onTriggered: menu.editor.setViewOption("terrain", checked) }
     QQC2.MenuItem { text: "Object models (off: boxes)"; checkable: true; checked: menu.st.models === true; onTriggered: menu.editor.setViewOption("models", checked) }
     QQC2.MenuItem { text: "Paths drawn on top"; checkable: true; checked: menu.st.xray === true; onTriggered: menu.editor.setViewOption("xray", checked) }
     QQC2.MenuItem { text: "Widths on every path"; checkable: true; checked: menu.st.widths === true; onTriggered: menu.editor.setViewOption("widths", checked) }
