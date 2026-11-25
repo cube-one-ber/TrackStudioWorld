@@ -366,15 +366,18 @@ pub fn load_model(d: &[u8]) -> Result<Model> {
 
 /// Path of a model in the romfs from the `Fmdb` its ModelInfo names:
 /// `Work/Model/CmnObj/CmnObj_ItemBox000/output/CmnObj_ItemBox000_A.fmdb` ->
-/// `Model/CmnObj_ItemBox000.CmnObj_ItemBox000_A.bfres.zs`.
+/// `Model/CmnObj_ItemBox000.CmnObj_ItemBox000_A.bfres.zs`, and
+/// `Work/Model/Gridify/Game03/Piece_Gridify_Game03_X00_Z07/output/Gridify_Game03_X00_Z07_23.fmdb` ->
+/// `Model/Piece_Gridify_Game03_X00_Z07.Gridify_Game03_X00_Z07_23.bfres.zs`.
 pub fn model_rel(fmdb: &str) -> Option<String> {
     let parts: Vec<&str> = fmdb.split('/').collect();
     if parts.len() < 5 || parts[0] != "Work" || parts[1] != "Model" {
         return None;
     }
     let last = parts.last()?;
+    let dir = parts.get(parts.len() - 3)?;
     let model = last.rsplit_once('.').map_or(*last, |x| x.0);
-    Some(format!("Model/{}.{model}.bfres.zs", parts[3]))
+    Some(format!("Model/{dir}.{model}.bfres.zs"))
 }
 
 /// Read and parse a model by its path in the romfs.
@@ -403,6 +406,10 @@ mod tests {
         assert_eq!(
             model_rel("Work/Model/CmnObj/CmnObj_ItemBox000/output/CmnObj_ItemBox000_A.fmdb").as_deref(),
             Some("Model/CmnObj_ItemBox000.CmnObj_ItemBox000_A.bfres.zs")
+        );
+        assert_eq!(
+            model_rel("Work/Model/Gridify/Game03/Piece_Gridify_Game03_X00_Z07/output/Gridify_Game03_X00_Z07_23.fmdb").as_deref(),
+            Some("Model/Piece_Gridify_Game03_X00_Z07.Gridify_Game03_X00_Z07_23.bfres.zs")
         );
         assert_eq!(model_rel("Model/x.fmdb"), None);
     }

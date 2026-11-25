@@ -982,6 +982,28 @@ impl Document {
         }
         (n, targets.len())
     }
+
+    /// Turn selected objects (e.g. respawn points) to match the rotation of the nearest
+    /// `RoutePathGraph` or `LapPathGraph` point. Returns how many turned.
+    pub fn orient_actors_to_path(&mut self, sel: &[u64]) -> usize {
+        let mut updates: Vec<(usize, [f32; 3])> = vec![];
+        for h in sel {
+            if let Some(Loc::Actor(i)) = self.index.get(h).copied() {
+                let pos = Vec3::from(self.actors()[i].vec3("Translate", [0.0; 3]));
+                if let Some(rot) = crate::scene::nearest_path_rotation(self, pos) {
+                    updates.push((i, rot));
+                }
+            }
+        }
+        if updates.is_empty() {
+            return 0;
+        }
+        self.push_undo_as("Orient to Path");
+        for (i, rot) in &updates {
+            self.actors_mut()[*i].insert("Rotate", Byml::floats(rot));
+        }
+        updates.len()
+    }
 }
 
 #[cfg(test)]

@@ -57,11 +57,22 @@ pub fn hex(c: [f32; 3]) -> String {
 const LINK_COLORS: [(&str, [f32; 3]); 3] =
     [("BasicSignal", [1.0, 1.0, 1.0]), ("MessageLink", [1.0, 0.47, 0.8]), ("CreateLink", [0.47, 1.0, 0.6])];
 const SELECT: [f32; 3] = [1.0, 0.85, 0.1];
+/// Bright emerald green so respawn points stand out from generic system objects.
+pub const RESPAWN_COLOR: [f32; 3] = [0.0, 0.90, 0.46];
 
-#[derive(Default, Clone)]
+/// Actor types that act as respawn points or respawn areas.
+pub const RESPAWN_ACTORS: [&str; 4] =
+    ["SystemObj_PrioRecoverPoint", "SystemObj_RespawnPoint_00", "SystemObj_BattleRespawnPoint_00", "SystemObj_RespawnArea_00"];
+
+pub fn is_respawn_actor(name: &str) -> bool {
+    RESPAWN_ACTORS.contains(&name)
+}
+
+#[derive(Clone)]
 pub struct ViewOptions {
     pub models: bool,
     pub widths: bool,
+    pub show_respawns: bool,
     pub hidden_rail_types: HashSet<String>,
     pub hidden_categories: HashSet<String>,
     pub hidden_actor_names: HashSet<String>,
@@ -70,6 +81,25 @@ pub struct ViewOptions {
     pub hidden_items: HashSet<u64>,
     /// the Bézier handle being edited: (point, 0 for `Control0` or 1 for `Control1`)
     pub active_handle: Option<(u64, usize)>,
+    /// fallback model paths for custom actors/stages not present in the vanilla catalog
+    pub custom_models: BTreeMap<String, String>,
+}
+
+impl Default for ViewOptions {
+    fn default() -> Self {
+        Self {
+            models: false,
+            widths: false,
+            show_respawns: true,
+            hidden_rail_types: HashSet::new(),
+            hidden_categories: HashSet::new(),
+            hidden_actor_names: HashSet::new(),
+            hidden_rails: HashSet::new(),
+            hidden_items: HashSet::new(),
+            active_handle: None,
+            custom_models: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -210,10 +240,13 @@ pub fn build(doc: &Document, cat: &Catalog, opts: &ViewOptions, model_ready: &dy
     let mut proxies = vec![];
     for a in doc.actors() {
         let h = hash_of(a);
+        let name = a.str_or("Name", "");
+        let respawn = is_respawn_actor(name);
         let info = cat.actor(a.str_or("Gyaml", ""));
         let category = info.map(|i| i.category.as_str()).unwrap_or("Other");
-        if opts.hidden_categories.contains(category)
-            || opts.hidden_actor_names.contains(a.str_or("Name", ""))
+        if (!opts.show_respawns && respawn)
+            || opts.hidden_categories.contains(category)
+            || opts.hidden_actor_names.contains(name)
             || opts.hidden_items.contains(&h)
         {
             continue;
@@ -222,12 +255,16 @@ pub fn build(doc: &Document, cat: &Catalog, opts: &ViewOptions, model_ready: &dy
         let world = Mat4::from_scale_rotation_translation(scale, rot, pos);
         let (mn, mx, shape) = actor_box(cat, a);
         proxies.push(Proxy { hash: h, world, min: mn, max: mx });
-        let model = info.and_then(|i| i.model.as_ref()).filter(|m| opts.models && a.get("PrimitiveType").is_none() && model_ready(m));
+        let model = info
+            .and_then(|i| i.model.as_ref())
+            .or_else(|| opts.custom_models.get(name))
+            .filter(|m| opts.models && a.get("PrimitiveType").is_none() && model_ready(m));
         match model {
             Some(m) => groups.entry(m.clone()).or_default().push(Instance { hash: h, pos, rot, scale }),
             None => {
                 let local = Mat4::from_scale_rotation_translation(mx - mn, Quat::IDENTITY, (mn + mx) / 2.0);
-                boxes.push(BoxActor { hash: h, shape, color: category_color(category), world: world * local });
+                let color = if respawn { RESPAWN_COLOR } else { category_color(category) };
+                boxes.push(BoxActor { hash: h, shape, color, world: world * local });
             }
         }
     }
@@ -362,7 +399,8 @@ pub fn links(doc: &Document) -> Lines {
     out
 }
 
-/// Outline boxes around selected objects.
+/// Outline boxes around selected objects, plus respawn point direction arrows and route
+/// respawn markers when `opts.show_respawns` is on.
 pub fn selection_outline(doc: &Document, cat: &Catalog, selection: &HashSet<u64>) -> Lines {
     let mut out = Lines::default();
     for &h in selection {
@@ -374,6 +412,106 @@ pub fn selection_outline(doc: &Document, cat: &Catalog, selection: &HashSet<u64>
         }
     }
     out
+}
+
+/// Direction arrows and markers for respawn points (`SystemObj_PrioRecoverPoint`,
+/// `SystemObj_RespawnPoint_00`, `SystemObj_BattleRespawnPoint_00`, `SystemObj_RespawnArea_00`)
+/// and `RoutePathGraph` points with custom `RecoverType` or `IsRecoverDash`.
+pub fn respawn_overlay(doc: &Document, cat: &Catalog, opts: &ViewOptions, selection: &HashSet<u64>) -> Lines {
+    let mut out = Lines::default();
+    if !opts.show_respawns {
+        return out;
+    }
+    for a in doc.actors() {
+        let name = a.str_or("Name", "");
+        if !is_respawn_actor(name) {
+            continue;
+        }
+        let h = hash_of(a);
+        let category = cat.actor(a.str_or("Gyaml", "")).map(|i| i.category.as_str()).unwrap_or("Other");
+        if opts.hidden_categories.contains(category) || opts.hidden_actor_names.contains(name) || opts.hidden_items.contains(&h) {
+            continue;
+        }
+        let (pos, rot, scale) = actor_world(a);
+        let c = if selection.contains(&h) { SELECT } else { RESPAWN_COLOR };
+        let fwd = (rot * Vec3::Z).normalize_or(Vec3::Z);
+        let up = (rot * Vec3::Y).normalize_or(Vec3::Y);
+        let right = (rot * Vec3::X).normalize_or(Vec3::X);
+        let len = (scale.z.abs().max(1.0) * 3.5).clamp(4.0, 16.0);
+        // forward arrow showing the direction Lakitu faces the kart on respawn
+        let tip = pos + fwd * len;
+        out.seg(pos, tip, c);
+        out.chevron(tip, fwd, (len * 0.32).clamp(1.2, 4.0), c);
+        // upright stem and small cross ring at the spawn position
+        out.seg(pos, pos + up * (len * 0.45), c);
+        let r = (len * 0.25).clamp(1.0, 3.0);
+        let ring = [right * r, fwd * r, -right * r, -fwd * r];
+        for k in 0..4 {
+            out.seg(pos + ring[k], pos + ring[(k + 1) % 4], c);
+        }
+    }
+    // RoutePathGraph points with non-default RecoverType or IsRecoverDash
+    if !opts.hidden_rail_types.contains("RoutePathGraph") {
+        for r in doc.rails() {
+            if r.str_or("Name", "") != "RoutePathGraph" || opts.hidden_rails.contains(&hash_of(r)) {
+                continue;
+            }
+            for pt in Document::points(r) {
+                let Some(dynm) = pt.get("Dynamic").and_then(|d| d.as_map()) else { continue };
+                let rt = dynm.get("RecoverType").and_then(|v| v.as_f64()).map(|x| x as i64).unwrap_or(0);
+                let dash = dynm.get("IsRecoverDash").and_then(|v| v.as_bool()).unwrap_or(false);
+                if rt == 0 && !dash {
+                    continue;
+                }
+                let p = Vec3::from(pt.vec3("Translation", [0.0; 3]));
+                let rot = quat_zyx(pt.vec3("Rotate", [0.0; 3]));
+                let right = rot * Vec3::X;
+                let fwd = rot * Vec3::Z;
+                let up = rot * Vec3::Y;
+                if rt == 3 {
+                    // RecoverType 3 (commonly disabled/jump/off-road): small red X above the point
+                    let col = [1.0, 0.32, 0.32];
+                    let c = p + up * 1.4;
+                    out.seg(c - right * 1.0 - fwd * 1.0, c + right * 1.0 + fwd * 1.0, col);
+                    out.seg(c - right * 1.0 + fwd * 1.0, c + right * 1.0 - fwd * 1.0, col);
+                } else if rt != 0 {
+                    // Other special RecoverType: emerald diamond ring
+                    let c = p + up * 1.4;
+                    let col = RESPAWN_COLOR;
+                    let ring = [right * 1.1, fwd * 1.1, -right * 1.1, -fwd * 1.1];
+                    for k in 0..4 {
+                        out.seg(c + ring[k], c + ring[(k + 1) % 4], col);
+                    }
+                }
+                if dash {
+                    let col = [1.0, 0.78, 0.15];
+                    out.chevron(p + up * 1.6 + fwd * 2.2, fwd, 1.8, col);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Rotation of the nearest `RoutePathGraph` or `LapPathGraph` point to `pos`, for aligning a
+/// respawn point along the road.
+pub fn nearest_path_rotation(doc: &Document, pos: Vec3) -> Option<[f32; 3]> {
+    let mut best: Option<(f32, [f32; 3])> = None;
+    for pref in ["RoutePathGraph", "LapPathGraph"] {
+        for r in doc.rails().iter().filter(|r| r.str_or("Name", "") == pref) {
+            for pt in Document::points(r) {
+                let p = Vec3::from(pt.vec3("Translation", [0.0; 3]));
+                let d2 = p.distance_squared(pos);
+                if best.is_none_or(|b| d2 < b.0) {
+                    best = Some((d2, pt.vec3("Rotate", [0.0; 3])));
+                }
+            }
+        }
+        if best.is_some() {
+            break;
+        }
+    }
+    best.map(|x| x.1)
 }
 
 /// Pick the nearest point or object along a ray (points win ties within 1 m).
@@ -470,21 +608,32 @@ pub fn course_points(doc: &Byml) -> Vec<[f32; 3]> {
 /// Stage models near a course, nearest first (at most `max`), skipping backdrops over 5 km
 /// and stages the course file places itself (those draw as objects).
 pub fn stages_for<'a>(cat: &'a Catalog, doc: &Byml, max: usize) -> Vec<&'a StagePlacement> {
+    stages_for_margin(&cat.data.stages, doc, 60.0, max)
+}
+
+/// Stage models from `stages` within `margin` metres of the course's bounding box, nearest first.
+pub fn stages_for_margin<'a>(stages: &'a [StagePlacement], doc: &Byml, margin: f32, max: usize) -> Vec<&'a StagePlacement> {
     let pts = course_points(doc);
     if pts.is_empty() {
         return vec![];
     }
-    let mn = Vec3::from([0, 1, 2].map(|i| pts.iter().map(|p| p[i]).fold(f32::MAX, f32::min) - 60.0));
-    let mx = Vec3::from([0, 1, 2].map(|i| pts.iter().map(|p| p[i]).fold(f32::MIN, f32::max) + 60.0));
+    let mn = Vec3::from([0, 1, 2].map(|i| pts.iter().map(|p| p[i]).fold(f32::MAX, f32::min) - margin));
+    let mx = Vec3::from([0, 1, 2].map(|i| pts.iter().map(|p| p[i]).fold(f32::MIN, f32::max) + margin));
     let centre = (mn + mx) / 2.0;
     let own: HashSet<&str> = doc.array("Actors").iter().map(|a| a.str_or("Name", "")).collect();
     let mut hits = vec![];
-    for s in &cat.data.stages {
-        let (Some(_), Some(aabb)) = (&s.model, s.aabb) else { continue };
+    for s in stages {
+        let Some(_) = &s.model else { continue };
         if own.contains(s.name.as_str()) {
             continue;
         }
-        let (smn, smx) = world_aabb(aabb, s.translate, s.rotate, s.scale);
+        let (smn, smx) = match s.aabb {
+            Some(aabb) => world_aabb(aabb, s.translate, s.rotate, s.scale),
+            None => (
+                [s.translate[0] - 250.0, s.translate[1] - 250.0, s.translate[2] - 250.0],
+                [s.translate[0] + 250.0, s.translate[1] + 250.0, s.translate[2] + 250.0],
+            ),
+        };
         let (smn, smx) = (Vec3::from(smn), Vec3::from(smx));
         if (smx - smn).max_element() > 5000.0 {
             continue;
@@ -494,6 +643,46 @@ pub fn stages_for<'a>(cat: &'a Catalog, doc: &Byml, max: usize) -> Vec<&'a Stage
         }
     }
     hits.sort_by(|a, b| a.0.total_cmp(&b.0));
+    hits.into_iter().take(max).map(|x| x.1).collect()
+}
+
+/// 250 m open-world Gridify scenery pieces within `margin` metres (horizontally) of any point
+/// of the course, nearest first. Uses actual course points rather than the whole bounding box
+/// so diagonal inter-stage routes don't pull in unrelated corners.
+pub fn gridify_for<'a>(cat: &'a Catalog, doc: &Byml, margin: f32, max: usize) -> Vec<&'a StagePlacement> {
+    let pts = course_points(doc);
+    if pts.is_empty() || cat.data.gridify.is_empty() {
+        return vec![];
+    }
+    let mn_x = pts.iter().map(|p| p[0]).fold(f32::MAX, f32::min) - margin - 250.0;
+    let mx_x = pts.iter().map(|p| p[0]).fold(f32::MIN, f32::max) + margin + 250.0;
+    let mn_z = pts.iter().map(|p| p[2]).fold(f32::MAX, f32::min) - margin - 250.0;
+    let mx_z = pts.iter().map(|p| p[2]).fold(f32::MIN, f32::max) + margin + 250.0;
+    let mut hits = vec![];
+    for g in &cat.data.gridify {
+        if g.model.is_none() {
+            continue;
+        }
+        let (smn, smx) = match g.aabb {
+            Some(aabb) => world_aabb(aabb, g.translate, g.rotate, g.scale),
+            None => ([g.translate[0] - 125.0, 0.0, g.translate[2] - 125.0], [g.translate[0] + 125.0, 1000.0, g.translate[2] + 125.0]),
+        };
+        if smx[0] < mn_x || smn[0] > mx_x || smx[2] < mn_z || smn[2] > mx_z {
+            continue;
+        }
+        let d = pts
+            .iter()
+            .map(|p| {
+                let dx = (smn[0] - p[0]).max(p[0] - smx[0]).max(0.0);
+                let dz = (smn[2] - p[2]).max(p[2] - smx[2]).max(0.0);
+                dx.hypot(dz)
+            })
+            .fold(f32::MAX, f32::min);
+        if d <= margin {
+            hits.push((d, g));
+        }
+    }
+    hits.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.name.cmp(&b.1.name)));
     hits.into_iter().take(max).map(|x| x.1).collect()
 }
 

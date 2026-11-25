@@ -114,6 +114,77 @@ impl Workspace {
         (self.romfs.join(rel), false)
     }
 
+    /// Resolve a romfs-relative path against mod `m` first, falling back to the game's romfs.
+    pub fn resolve(&self, rel: &str, m: Option<&str>) -> PathBuf {
+        self.source(rel, m).0
+    }
+
+    /// Whether a romfs-relative path exists in mod `m` or the game's romfs.
+    pub fn exists(&self, rel: &str, m: Option<&str>) -> bool {
+        self.resolve(rel, m).is_file()
+    }
+
+    /// Load a course file directly from any path on disk (for custom courses outside the game's
+    /// romfs or opened with Open File). Returns the loaded course and, if the file sits inside
+    /// `<mods_root>/<mod>/romfs/`, that mod's name.
+    pub fn load_path(&self, path: &Path) -> Result<(Loaded, Option<String>)> {
+        let mut detected_mod = None;
+        let mut rel = None;
+        if let Ok(rest) = path.strip_prefix(&self.mods_root) {
+            let comps: Vec<_> = rest.components().collect();
+            if comps.len() >= 3 && comps[1].as_os_str() == "romfs" {
+                let m = comps[0].as_os_str().to_string_lossy().into_owned();
+                let r: PathBuf = comps[2..].iter().collect();
+                let r = r.to_string_lossy().replace('\\', "/");
+                if r.starts_with("Banc/") {
+                    detected_mod = Some(m);
+                    rel = Some(r);
+                }
+            }
+        }
+        if rel.is_none()
+            && let Ok(r) = path.strip_prefix(&self.romfs)
+        {
+            let r = r.to_string_lossy().replace('\\', "/");
+            if r.starts_with("Banc/") {
+                rel = Some(r);
+            }
+        }
+        // Any other path containing `/Banc/...`: keep its path from `Banc/` on, else `Banc/<file>`.
+        let rel = match rel {
+            Some(r) => safe_rel(&r)?,
+            None => {
+                let s = path.to_string_lossy().replace('\\', "/");
+                if let Some(i) = s.rfind("/Banc/") {
+                    safe_rel(&s[i + 1..])?
+                } else {
+                    let name = path.file_name().ok_or("not a file")?.to_string_lossy();
+                    safe_rel(&format!("Banc/{name}"))?
+                }
+            }
+        };
+        let (doc, version) = byml::from_bytes(&read_file(path)?).path_context(path)?;
+        let prel = pad_rel(&rel);
+        // Check sibling `Banc/PathAdditionalData/<base>.byml` next to the opened file first,
+        // then fall back to the workspace's romfs.
+        let sibling_pad = path.parent().and_then(|p| {
+            let name = format!("{}.byml", crate::banc::course_base(&rel));
+            let direct = p.join("PathAdditionalData").join(&name);
+            if direct.is_file() {
+                Some(direct)
+            } else {
+                p.parent().map(|pp| pp.join("PathAdditionalData").join(&name)).filter(|x| x.is_file())
+            }
+        });
+        let pad_src = sibling_pad.unwrap_or_else(|| self.resolve(&prel, detected_mod.as_deref()));
+        let (pad, pad_file) = match read_file(&pad_src).ok().and_then(|d| byml::from_bytes(&d).ok()) {
+            Some((p, _)) => (Some(p), Some(prel)),
+            None => (None, None),
+        };
+        let from_mod = detected_mod.is_some() || !path.starts_with(&self.romfs);
+        Ok((Loaded { file: rel, from_mod, version, doc, pad, pad_file }, detected_mod))
+    }
+
     /// Mods saved so far (folders under the mods root that have a `romfs`).
     pub fn mods(&self) -> Vec<String> {
         let mut v: Vec<String> = std::fs::read_dir(&self.mods_root)
@@ -466,6 +537,39 @@ mod tests {
         assert!(!ws.save("../../etc/passwd", &l.doc, None, "X", &HashSet::new(), None).ok);
         assert!(!ws.save(rel, &l.doc, None, "../escape", &HashSet::new(), None).ok);
         assert_eq!(ws.mods(), ["Mod"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn custom_course_slot_loads_and_saves() {
+        let dir = temp("custom-slot");
+        let _ = romfs(&dir.join("romfs"));
+        let ws = Workspace { romfs: dir.join("romfs"), mods_root: dir.join("mods") };
+        let custom_rel = "Banc/Race_CustomSlot99_A_00[Game03].bcett.byml.zs";
+        let custom_path = dir.join("mods/CustomPack/romfs").join(custom_rel);
+        let doc = course();
+        let data = byml::to_bytes(&doc, BYML_VERSION, true).unwrap();
+        write_atomic(&custom_path, &compress(&data).unwrap()).unwrap();
+
+        assert!(ws.exists(custom_rel, Some("CustomPack")));
+        assert!(!ws.exists(custom_rel, None));
+
+        // Load by relative path from the mod
+        let l = ws.load(custom_rel, Some("CustomPack")).unwrap();
+        assert!(l.from_mod && l.file == custom_rel);
+
+        // Load directly by filesystem path detects the mod name
+        let (l2, m) = ws.load_path(&custom_path).unwrap();
+        assert_eq!(m.as_deref(), Some("CustomPack"));
+        assert!(l2.from_mod && l2.file == custom_rel);
+
+        // Saving adds a new RESTBL entry for the custom slot without needing a vanilla original
+        let r = ws.save(custom_rel, &l.doc, None, "CustomPack", &HashSet::new(), None);
+        assert!(r.ok && r.written.len() == 2, "{r:?}");
+        let table = ResourceSizeTable::parse(&read_file(&dir.join("mods/CustomPack/romfs").join(&r.written[1])).unwrap()).unwrap();
+        let size = read_file(&custom_path).unwrap().len();
+        assert_eq!(table.get(custom_rel), Some(required_size(custom_rel, size)));
+
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

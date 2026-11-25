@@ -76,6 +76,14 @@ Kirigami.ApplicationWindow {
         onTriggered: openDialog.open()
     }
     Kirigami.Action {
+        id: openFileAction
+        text: "Open Course File…"
+        icon.name: "document-open-folder"
+        shortcut: "Ctrl+Shift+O"
+        enabled: editor.ready
+        onTriggered: openDialog.browseFile()
+    }
+    Kirigami.Action {
         id: saveAction
         text: "Save Mod"
         icon.name: "document-save"
@@ -179,6 +187,20 @@ Kirigami.ApplicationWindow {
         shortcut: "Q"
         enabled: root.hasCourse
         onTriggered: viewport.addAtCenter(root.currentAsset)
+    }
+    Kirigami.Action {
+        id: addRespawnAction
+        text: "Add Respawn Point"
+        icon.name: "mark-location"
+        enabled: root.hasCourse
+        onTriggered: viewport.addRespawnAtCenter()
+    }
+    Kirigami.Action {
+        id: orientToPathAction
+        text: "Face Along Nearest Path"
+        icon.name: "transform-rotate"
+        enabled: root.sel.kind === "actor" || (root.sel.kind === "multi" && (root.sel.objects || 0) > 0)
+        onTriggered: editor.orientToPath()
     }
     Kirigami.Action {
         id: changeAction
@@ -396,6 +418,7 @@ Kirigami.ApplicationWindow {
         QQC2.Menu {
             title: "&File"
             QQC2.MenuItem { action: openAction }
+            QQC2.MenuItem { action: openFileAction }
             QQC2.Menu {
                 id: recentMenu
                 title: "Open Recent"
@@ -458,7 +481,9 @@ Kirigami.ApplicationWindow {
             QQC2.MenuItem { action: deleteAction }
             QQC2.MenuSeparator {}
             QQC2.MenuItem { action: addAction }
+            QQC2.MenuItem { action: addRespawnAction }
             QQC2.MenuItem { action: changeAction }
+            QQC2.MenuItem { action: orientToPathAction }
             QQC2.MenuItem { action: dropAction }
             QQC2.MenuItem { action: linkAction }
             QQC2.MenuSeparator {}
@@ -527,7 +552,7 @@ Kirigami.ApplicationWindow {
         hide: hideAction, unhide: unhideAction, change: changeAction, link: linkAction, extrude: extrudeAction, insert: insertPointAction,
         connect: connectAction, split: splitAction, join: joinAction, orient: orientAction, smooth: smoothAction, straighten: straightenAction,
         subdivide: subdivideAction, reverse: reverseAction, selectPath: selectPathAction, placeAlong: placeAlongAction,
-        changePathType: changePathTypeAction, selectAll: selectAllAction
+        changePathType: changePathTypeAction, selectAll: selectAllAction, orientToPath: orientToPathAction
     })
 
     // ------------------------------------------------------------ layout

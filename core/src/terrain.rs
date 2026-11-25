@@ -17,6 +17,8 @@ use std::path::Path;
 
 /// The world colour map, used as the terrain's albedo texture.
 pub const COLOR_TEXTURE: &str = "Map_GroundColor_Root_GroundColor";
+/// Full-resolution world colour map (2048x2048), used when high-quality terrain is enabled.
+pub const COLOR_TEXTURE_HQ: &str = "Map_GroundColor_Root_GroundColor@2048";
 /// Side of the square the colour map covers, in metres, centred on the origin.
 const COLOR_SIZE: f32 = 16000.0;
 const SCENE: &str = "TerrainArc/Game03_Proc";
@@ -26,7 +28,16 @@ const CELLS: usize = 256;
 /// First sample on a tile's edge.
 const BORDER: usize = 2;
 /// Rough upper bound of mesh cells in one terrain; coarser spacing beyond it.
-const MAX_CELLS: usize = 600_000;
+const MAX_CELLS_STANDARD: usize = 600_000;
+const MAX_CELLS_HIGH: usize = 2_400_000;
+
+/// Mesh and texture detail level for open-world terrain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Quality {
+    #[default]
+    Standard,
+    High,
+}
 
 /// One tile of the quadtree, in world metres.
 #[derive(Debug, Clone)]
@@ -134,34 +145,61 @@ pub fn region_around(points: &[[f32; 3]], margin: f32) -> Option<[f32; 4]> {
     (mn[0] <= mx[0]).then_some([mn[0] - margin, mn[1] - margin, mx[0] + margin, mx[1] + margin])
 }
 
-/// Model cache key of the terrain of `region`. Terrain shares the model cache with the
-/// romfs models, so its key carries the region and never names a file.
+/// Model cache key of the terrain of `region` at standard quality. Terrain shares the model
+/// cache with the romfs models, so its key carries the region and never names a file.
 pub fn model_key(region: [f32; 4]) -> String {
-    format!("terrain:{}:{}:{}:{}", region[0].floor(), region[1].floor(), region[2].ceil(), region[3].ceil())
+    model_key_with_quality(region, Quality::Standard)
+}
+
+/// Model cache key of the terrain of `region` at `quality`.
+pub fn model_key_with_quality(region: [f32; 4], quality: Quality) -> String {
+    let tag = match quality {
+        Quality::Standard => "terrain",
+        Quality::High => "terrain:hq",
+    };
+    format!("{tag}:{}:{}:{}:{}", region[0].floor(), region[1].floor(), region[2].ceil(), region[3].ceil())
 }
 
 /// The region of a [`model_key`], None for any other key.
 pub fn parse_key(key: &str) -> Option<[f32; 4]> {
-    let v: Vec<f32> = key.strip_prefix("terrain:")?.split(':').map(|s| s.parse().ok()).collect::<Option<_>>()?;
-    v.try_into().ok()
+    parse_key_with_quality(key).map(|(r, _)| r)
+}
+
+/// The region and quality of a terrain model cache key, None for any other key.
+pub fn parse_key_with_quality(key: &str) -> Option<([f32; 4], Quality)> {
+    let (rest, quality) =
+        if let Some(r) = key.strip_prefix("terrain:hq:") { (r, Quality::High) } else { (key.strip_prefix("terrain:")?, Quality::Standard) };
+    let v: Vec<f32> = rest.split(':').map(|s| s.parse().ok()).collect::<Option<_>>()?;
+    Some((v.try_into().ok()?, quality))
 }
 
 /// Metres between mesh vertices wanted at `d` metres from the course: finest at the course,
 /// coarser further out.
-fn spacing_at(d: f32) -> f32 {
-    match d {
-        d if d < 100.0 => 1.0,
-        d if d < 300.0 => 2.0,
-        _ => 8.0,
+fn spacing_at(d: f32, quality: Quality) -> f32 {
+    match quality {
+        Quality::Standard => match d {
+            d if d < 100.0 => 1.0,
+            d if d < 300.0 => 2.0,
+            _ => 8.0,
+        },
+        Quality::High => match d {
+            d if d < 200.0 => 0.5,
+            d if d < 500.0 => 1.0,
+            _ => 2.0,
+        },
     }
 }
 
 /// The terrain of `region` (`[min_x, min_z, max_x, max_z]`, world metres) as a model in world
 /// space, textured with [`COLOR_TEXTURE`]: one part per tile it touches that smaller tiles do
 /// not wholly cover. Tiles are meshed finest near `points` (the course) and coarser away from
-/// it, within [`MAX_CELLS`]. Cells on a hole are left out. Empty when the region misses the
-/// terrain.
+/// it. Cells on a hole are left out. Empty when the region misses the terrain.
 pub fn load(romfs: &Path, region: [f32; 4], points: &[[f32; 3]]) -> Result<Model> {
+    load_with_quality(romfs, region, points, Quality::Standard)
+}
+
+/// [`load`] at the requested [`Quality`].
+pub fn load_with_quality(romfs: &Path, region: [f32; 4], points: &[[f32; 3]], quality: Quality) -> Result<Model> {
     let scene = read_scene(romfs)?;
     let tiles: Vec<&Tile> = scene
         .tiles
@@ -187,14 +225,22 @@ pub fn load(romfs: &Path, region: [f32; 4], points: &[[f32; 3]]) -> Result<Model
                 .iter()
                 .map(|p| ((p[0] - t.centre[0]).abs() - h).max(0.0).hypot(((p[2] - t.centre[1]).abs() - h).max(0.0)))
                 .fold(f32::MAX, f32::min);
-            let want = (spacing_at(d) / (t.size / CELLS as f32)).max(1.0) as usize;
+            let want = (spacing_at(d, quality) / (t.size / CELLS as f32)).max(1.0) as usize;
             (1usize << want.ilog2()).min(cap)
         })
         .collect();
+    let max_cells = match quality {
+        Quality::Standard => MAX_CELLS_STANDARD,
+        Quality::High => MAX_CELLS_HIGH,
+    };
     let cells = |s: &[usize]| s.iter().map(|s| (CELLS / s).pow(2)).sum::<usize>();
-    while cells(&strides) > MAX_CELLS && strides.iter().zip(&caps).any(|(s, c)| s < c) {
+    while cells(&strides) > max_cells && strides.iter().zip(&caps).any(|(s, c)| s < c) {
         strides.iter_mut().zip(&caps).for_each(|(s, &c)| *s = (*s * 2).min(c));
     }
+    let tex = match quality {
+        Quality::Standard => COLOR_TEXTURE,
+        Quality::High => COLOR_TEXTURE_HQ,
+    };
     let scale = scene.max_height / 65536.0;
     let mut model = Model::default();
     for (t, &step) in tiles.iter().zip(&strides) {
@@ -202,7 +248,7 @@ pub fn load(romfs: &Path, region: [f32; 4], points: &[[f32; 3]]) -> Result<Model
         let at = |i: isize, j: isize| h[j.clamp(0, SAMPLES as isize - 1) as usize * SAMPLES + i.clamp(0, SAMPLES as isize - 1) as usize];
         let (cell, n) = (t.size / CELLS as f32, CELLS / step);
         let origin = [t.centre[0] - t.size / 2.0, t.centre[1] - t.size / 2.0];
-        let mut part = Part { material: "Terrain".into(), texture: Some(COLOR_TEXTURE.into()), ..Part::default() };
+        let mut part = Part { material: "Terrain".into(), texture: Some(tex.into()), ..Part::default() };
         for z in 0..=n {
             for x in 0..=n {
                 let (i, j) = ((BORDER + x * step) as isize, (BORDER + z * step) as isize);
@@ -253,6 +299,8 @@ mod tests {
     fn keys_round_trip() {
         let r = [-120.0, 40.0, 900.0, 1500.0];
         assert_eq!(parse_key(&model_key(r)), Some(r));
+        assert_eq!(parse_key_with_quality(&model_key_with_quality(r, Quality::Standard)), Some((r, Quality::Standard)));
+        assert_eq!(parse_key_with_quality(&model_key_with_quality(r, Quality::High)), Some((r, Quality::High)));
         assert_eq!(parse_key("Model/Stage_X.bfres.zs"), None);
     }
 }

@@ -6,7 +6,7 @@ import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 import TrackStudioWorld
 
-// Objects grouped by type and paths, with visibility checkboxes (Track Studio outliner).
+// Objects grouped by type, paths, and world/terrain toggles (Track Studio outliner).
 ColumnLayout {
     id: ol
     required property Editor editor
@@ -14,15 +14,52 @@ ColumnLayout {
     signal focusRequested()
     property var rows: []
     property string revealed: ""
+    // last clicked row key for Shift+Click contiguous range selection
+    property string anchorKey: ""
+    property bool suppressReveal: false
     spacing: 0
+
+    function isSelectable(r) {
+        return r.kind === "item" || r.kind === "group";
+    }
+    function selectRow(rowIndex, rowData, mods) {
+        const shift = (mods & Qt.ShiftModifier) !== 0;
+        const ctrl = (mods & Qt.ControlModifier) !== 0;
+        suppressReveal = true;
+        if (shift && anchorKey.length > 0) {
+            const a = rows.findIndex(r => r.key === anchorKey);
+            if (a >= 0) {
+                const lo = Math.min(a, rowIndex);
+                const hi = Math.max(a, rowIndex);
+                const keys = [];
+                for (let i = lo; i <= hi; ++i) {
+                    if (isSelectable(rows[i]))
+                        keys.push(rows[i].key);
+                }
+                editor.selectRange(JSON.stringify(keys), ctrl);
+                return;
+            }
+        }
+        anchorKey = rowData.key;
+        if (rowData.kind === "group" && rowData.key.startsWith("a:"))
+            editor.selectGroup(rowData.key, ctrl);
+        else
+            editor.selectHash(rowData.hash, ctrl);
+    }
 
     function refresh() {
         const y = list.contentY;
         rows = JSON.parse(editor.outliner(search.text));
         list.contentY = y;
-        // scroll a newly selected object or path point into view (Rust expands its group)
+        // scroll a newly selected object or path point into view (Rust expands its group),
+        // unless the user clicked directly inside the sidebar
         const i = rows.findIndex(r => r.kind === "item" && r.selected);
         const key = i >= 0 ? rows[i].key : "";
+        if (suppressReveal) {
+            suppressReveal = false;
+            revealed = key;
+            return;
+        }
         if (key !== revealed) {
             revealed = key;
             if (i >= 0)
@@ -39,7 +76,7 @@ ColumnLayout {
         id: search
         Layout.fillWidth: true
         Layout.margins: Kirigami.Units.smallSpacing
-        placeholderText: "Filter objects and paths"
+        placeholderText: "Filter objects, paths and terrain"
         enabled: ol.editor.courseTitle.length > 0
         onTextChanged: ol.refresh()
     }
@@ -63,34 +100,40 @@ ColumnLayout {
                     readonly property bool isSection: modelData.kind === "section"
                     readonly property bool isGroup: modelData.kind === "group"
                     readonly property bool isItem: modelData.kind === "item"
+                    readonly property bool isToggle: modelData.kind === "toggle"
+                    readonly property bool isWorldGroup: modelData.kind === "worldgroup"
+                    readonly property bool isStage: modelData.kind === "stage"
                     readonly property bool isRail: (modelData.key || "").startsWith("r:")
                     width: ListView.view.width
                     height: isSection ? Kirigami.Units.gridUnit * 1.6 : Kirigami.Units.gridUnit * 1.35
                     padding: 0
                     hoverEnabled: !isSection
-                    highlighted: modelData.selected === true && !isGroup
+                    highlighted: (isItem && modelData.selected === true) || (isGroup && modelData.allSelected === true)
                     background: Rectangle {
                         readonly property color hl: Kirigami.Theme.highlightColor
                         color: row.highlighted ? hl
-                             : row.isGroup && row.modelData.selected ? Qt.rgba(hl.r, hl.g, hl.b, 0.22)
+                             : row.isGroup && row.modelData.selected ? Qt.rgba(hl.r, hl.g, hl.b, 0.25)
                              : row.hovered ? Qt.rgba(hl.r, hl.g, hl.b, 0.12)
                              : row.isSection ? Kirigami.Theme.alternateBackgroundColor : "transparent"
                     }
                     contentItem: RowLayout {
                         spacing: Kirigami.Units.smallSpacing
                         Item {
-                            implicitWidth: row.isItem ? Kirigami.Units.gridUnit * 2.9 : Kirigami.Units.smallSpacing
+                            implicitWidth: row.isItem ? Kirigami.Units.gridUnit * 2.9
+                                         : row.isStage ? Kirigami.Units.gridUnit * 1.6
+                                         : Kirigami.Units.smallSpacing
                         }
                         // section: what it holds
                         Kirigami.Icon {
                             visible: row.isSection
-                            source: row.modelData.key === "s:paths" ? "draw-polyline" : "draw-cuboid"
+                            source: row.modelData.key === "s:paths" ? "draw-polyline"
+                                  : row.modelData.key === "s:world" ? "globe" : "draw-cuboid"
                             implicitWidth: Kirigami.Units.iconSizes.small
                             implicitHeight: Kirigami.Units.iconSizes.small
                         }
-                        // group: expand arrow, visibility, thumbnail or colour key
+                        // group / worldgroup: expand arrow
                         Kirigami.Icon {
-                            visible: row.isGroup
+                            visible: row.isGroup || row.isWorldGroup
                             source: row.modelData.expanded ? "arrow-down" : "arrow-right"
                             implicitWidth: Kirigami.Units.iconSizes.small
                             implicitHeight: Kirigami.Units.iconSizes.small
@@ -104,6 +147,17 @@ ColumnLayout {
                             QQC2.ToolTip.text: "Show in the viewport"
                             QQC2.ToolTip.visible: hovered
                             QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+                        }
+                        QQC2.CheckBox {
+                            visible: row.isToggle || row.isStage
+                            checked: row.modelData.checked === true
+                            padding: 0
+                            onToggled: {
+                                if (row.isToggle)
+                                    ol.editor.setViewOption(row.modelData.key.slice(4), checked);
+                                else
+                                    ol.editor.setExtraStage(row.modelData.name, checked);
+                            }
                         }
                         Item {
                             visible: row.isGroup || row.isItem
@@ -144,20 +198,23 @@ ColumnLayout {
                             color: row.highlighted ? Kirigami.Theme.highlightedTextColor : Kirigami.Theme.textColor
                             opacity: row.isSection ? 0.8 : 1
                             elide: Text.ElideRight
-                            Layout.fillWidth: !(row.isItem && row.modelData.sub)
+                            Layout.fillWidth: !((row.isItem || row.isStage || row.isToggle || row.isWorldGroup) && row.modelData.sub)
                         }
                         QQC2.Label {
-                            visible: row.isItem && !!row.modelData.sub
+                            visible: (row.isItem || row.isStage || row.isToggle || row.isWorldGroup) && !!row.modelData.sub
                             text: row.modelData.sub || ""
                             color: row.highlighted ? Kirigami.Theme.highlightedTextColor : Kirigami.Theme.disabledTextColor
                             elide: Text.ElideRight
+                            horizontalAlignment: (row.isStage || row.isToggle) ? Text.AlignRight : Text.AlignLeft
                             Layout.fillWidth: true
+                            Layout.rightMargin: (row.isStage || row.isToggle) ? Kirigami.Units.smallSpacing : 0
                             font.pointSize: Kirigami.Theme.smallFont.pointSize
+                            font.features: { "tnum": 1 }
                         }
                         QQC2.Label {
                             visible: row.modelData.count !== undefined
                             text: row.modelData.count !== undefined ? row.modelData.count : ""
-                            color: Kirigami.Theme.disabledTextColor
+                            color: row.highlighted ? Kirigami.Theme.highlightedTextColor : Kirigami.Theme.disabledTextColor
                             font.pointSize: Kirigami.Theme.smallFont.pointSize
                             font.features: { "tnum": 1 }
                             horizontalAlignment: Text.AlignRight
@@ -165,34 +222,44 @@ ColumnLayout {
                             Layout.rightMargin: Kirigami.Units.smallSpacing
                         }
                     }
-                    QQC2.ToolTip.text: row.isGroup && !row.isRail ? row.modelData.name + (row.modelData.sub ? "\n" + row.modelData.sub : "") + "\n" + row.modelData.category
-                        : row.isItem && row.modelData.tip ? row.modelData.tip : ""
+                    QQC2.ToolTip.text: row.isGroup && !row.isRail ? row.modelData.name + (row.modelData.sub ? "\n" + row.modelData.sub : "") + "\n" + row.modelData.category + "\nClick: select · Ctrl+Click: add/remove · Shift+Click: range"
+                        : row.modelData.tip ? row.modelData.tip : ""
                     QQC2.ToolTip.visible: hovered && QQC2.ToolTip.text.length > 0
                     QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
                     onClicked: {
                         if (isSection)
                             return;
-                        const additive = (Qt.application.keyboardModifiers & (Qt.ControlModifier | Qt.ShiftModifier)) !== 0;
-                        if (isGroup && modelData.key.startsWith("a:"))
-                            ol.editor.selectGroup(modelData.key);
-                        else
-                            ol.editor.selectHash(modelData.hash, additive);
+                        if (isToggle) {
+                            ol.editor.setViewOption(modelData.key.slice(4), modelData.checked !== true);
+                            return;
+                        }
+                        if (isWorldGroup) {
+                            ol.editor.toggleExpand(modelData.key);
+                            return;
+                        }
+                        if (isStage) {
+                            ol.editor.setExtraStage(modelData.name, modelData.checked !== true);
+                            return;
+                        }
+                        ol.selectRow(index, modelData, Qt.application.keyboardModifiers);
                     }
                     onDoubleClicked: {
-                        if (isGroup)
+                        if (isGroup || isWorldGroup)
                             ol.editor.toggleExpand(modelData.key);
                         else if (isItem)
                             ol.focusRequested();
                     }
-                    // right click: select (unless already selected), then a menu
+                    // right click: select (unless already part of the selection), then a menu
                     TapHandler {
                         acceptedButtons: Qt.RightButton
                         onTapped: {
-                            if (row.isSection)
+                            if (!row.isGroup && !row.isItem)
                                 return;
-                            if (!row.modelData.selected || row.isGroup) {
+                            if (!row.modelData.selected) {
+                                ol.suppressReveal = true;
+                                ol.anchorKey = row.modelData.key;
                                 if (row.isGroup && row.modelData.key.startsWith("a:"))
-                                    ol.editor.selectGroup(row.modelData.key);
+                                    ol.editor.selectGroup(row.modelData.key, false);
                                 else
                                     ol.editor.selectHash(row.modelData.hash, false);
                             }
@@ -202,6 +269,19 @@ ColumnLayout {
                     QQC2.Menu {
                         id: rowMenu
                         QQC2.MenuItem { text: "Focus"; icon.name: "crosshairs"; onTriggered: ol.focusRequested() }
+                        QQC2.MenuItem {
+                            visible: ol.editor.selectionCount > 0 && !(row.isItem && row.modelData.selected) && !(row.isGroup && row.modelData.allSelected)
+                            height: visible ? implicitHeight : 0
+                            text: "Add to Selection"
+                            icon.name: "list-add"
+                            onTriggered: {
+                                ol.suppressReveal = true;
+                                if (row.isGroup && row.modelData.key.startsWith("a:"))
+                                    ol.editor.selectGroup(row.modelData.key, true);
+                                else
+                                    ol.editor.selectHash(row.modelData.hash, true);
+                            }
+                        }
                         QQC2.MenuItem {
                             visible: row.isGroup
                             height: visible ? implicitHeight : 0
@@ -232,7 +312,7 @@ ColumnLayout {
         Kirigami.PlaceholderMessage {
             anchors.centerIn: parent
             width: parent.width - Kirigami.Units.gridUnit * 2
-            visible: ol.editor.courseTitle.length > 0 && ol.rows.length <= 2 && search.text.length > 0
+            visible: ol.editor.courseTitle.length > 0 && ol.rows.filter(r => r.kind !== "section").length === 0 && search.text.length > 0
             icon.name: "edit-find"
             text: "No matches"
             explanation: "Nothing is named \"" + search.text + "\"."

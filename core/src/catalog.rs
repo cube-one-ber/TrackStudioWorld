@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// Bump when `CatalogData` or how it is built changes, so old caches are rebuilt.
-const CACHE_VERSION: u32 = 5;
+const CACHE_VERSION: u32 = 6;
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub struct ActorInfo {
@@ -105,6 +105,8 @@ pub struct CatalogData {
     pub rails: BTreeMap<String, RailDef>,
     pub courses: BTreeMap<String, Vec<CourseInfo>>,
     pub stages: Vec<StagePlacement>,
+    #[serde(default)]
+    pub gridify: Vec<StagePlacement>,
     pub seen_values: BTreeMap<String, Vec<Value>>,
     pub collects: Collects,
 }
@@ -301,15 +303,40 @@ fn plain(v: Option<&Byml>) -> Value {
     v.map_or(Value::Null, typedjson::to_plain)
 }
 
-/// Every Banc course file under the romfs, as relative paths with forward slashes.
+/// Every Banc course file under `romfs`, as relative paths with forward slashes.
 pub fn banc_files(romfs: &Path) -> Vec<String> {
     let mut v: Vec<String> = crate::io::files_under(&romfs.join("Banc"))
         .into_iter()
-        .filter(|f| f.ends_with(".bcett.byml.zs"))
+        .filter(|f| f.ends_with(".bcett.byml.zs") || f.ends_with(".bcett.byml"))
         .map(|f| format!("Banc/{f}"))
         .collect();
     v.sort();
     v
+}
+
+/// Fallback model search in `romfs/Model/` for custom actors/stages not in the vanilla catalog.
+pub fn find_model_for_actor(romfs: &Path, name: &str) -> Option<String> {
+    if name.is_empty() {
+        return None;
+    }
+    let dir = romfs.join("Model");
+    if !dir.is_dir() {
+        return None;
+    }
+    for cand in [format!("{name}.{name}.bfres.zs"), format!("{name}.{name}_A.bfres.zs")] {
+        if dir.join(&cand).is_file() {
+            return Some(format!("Model/{cand}"));
+        }
+    }
+    let prefix = format!("{name}.");
+    let mut hits: Vec<String> = std::fs::read_dir(&dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|f| f.starts_with(&prefix) && f.ends_with(".bfres.zs"))
+        .collect();
+    hits.sort();
+    hits.into_iter().next().map(|f| format!("Model/{f}"))
 }
 
 /// Parse many romfs files on all cores. Files that fail to read give `None`.
@@ -342,6 +369,7 @@ fn build(romfs: &Path, progress: &dyn Fn(&str)) -> Result<CatalogData> {
     let rails = read_rails(romfs);
     let courses = read_courses(romfs);
     let stages = read_stages(romfs, &actors);
+    let gridify = read_gridify(&actors);
     progress("Surveying every shipped course…");
     let survey = survey_courses(romfs);
     progress("Fitting Collects classes…");
@@ -363,7 +391,7 @@ fn build(romfs: &Path, progress: &dyn Fn(&str)) -> Result<CatalogData> {
             a.collision = Some(donor);
         }
     }
-    Ok(CatalogData { stamp: vec![], actors, params, rails, courses, stages, seen_values: survey.seen_values, collects })
+    Ok(CatalogData { stamp: vec![], actors, params, rails, courses, stages, gridify, seen_values: survey.seen_values, collects })
 }
 
 /// For each object type some course bakes: a collision file that has its shapes, and the
@@ -500,7 +528,7 @@ fn read_rails(romfs: &Path) -> BTreeMap<String, RailDef> {
 }
 
 /// Courses (RSDB `Course`), by Banc file base name.
-fn read_courses(romfs: &Path) -> BTreeMap<String, Vec<CourseInfo>> {
+pub fn read_courses(romfs: &Path) -> BTreeMap<String, Vec<CourseInfo>> {
     let mut courses: BTreeMap<String, Vec<CourseInfo>> = BTreeMap::new();
     for row in rsdb(romfs, "Course") {
         let Some(base) = row.str_or("BancFile", "").strip_prefix("Work/Banc/").and_then(|b| b.strip_suffix(".bcett.json")) else {
@@ -519,7 +547,7 @@ fn read_courses(romfs: &Path) -> BTreeMap<String, Vec<CourseInfo>> {
 
 /// Stage models placed in the world: WorldResident for the island, Rainbow_00_Fix for Rainbow
 /// Road's sky sections. Other files that place `Stage_` actors draw them as ordinary objects.
-fn read_stages(romfs: &Path, actors: &BTreeMap<String, ActorInfo>) -> Vec<StagePlacement> {
+pub fn read_stages(romfs: &Path, actors: &BTreeMap<String, ActorInfo>) -> Vec<StagePlacement> {
     let mut stages = vec![];
     for rel in ["Banc/World_Game03/WorldResident.bcett.byml.zs", "Banc/Rainbow_00_Fix.bcett.byml.zs"] {
         let Some((root, _)) = read_file(&romfs.join(rel)).ok().and_then(|d| byml::from_bytes(&d).ok()) else { continue };
@@ -529,10 +557,11 @@ fn read_stages(romfs: &Path, actors: &BTreeMap<String, ActorInfo>) -> Vec<StageP
                 continue;
             }
             let act = actors.get(n);
+            let model = act.and_then(|x| x.model.clone()).or_else(|| find_model_for_actor(romfs, n));
             stages.push(StagePlacement {
                 name: n.into(),
                 source: rel.into(),
-                model: act.and_then(|x| x.model.clone()),
+                model,
                 aabb: act.and_then(|x| x.aabb),
                 translate: a.vec3("Translate", [0.0; 3]),
                 rotate: a.vec3("Rotate", [0.0; 3]),
@@ -541,6 +570,46 @@ fn read_stages(romfs: &Path, actors: &BTreeMap<String, ActorInfo>) -> Vec<StageP
         }
     }
     stages
+}
+
+/// World-space origin of a 250 m Gridify piece (`Gridify_Game03_X{gx:02}_Z{gz:02}_{sz}{sx}`).
+/// The 16 km island spans `[-8000, +8000]` in 16 × 16 cells of 1000 m, each split into 4 × 4
+/// subcells of 250 m where the two suffix digits are `(sz, sx)`.
+pub fn parse_gridify_cell(name: &str) -> Option<[f32; 3]> {
+    let rest = name.strip_prefix("Gridify_Game03_X")?;
+    let b = rest.as_bytes();
+    if b.len() != 9 || b[2] != b'_' || b[3] != b'Z' || b[6] != b'_' {
+        return None;
+    }
+    let gx: i32 = rest[0..2].parse().ok()?;
+    let gz: i32 = rest[4..6].parse().ok()?;
+    let sz = (b[7].checked_sub(b'0')?) as i32;
+    let sx = (b[8].checked_sub(b'0')?) as i32;
+    if !(0..16).contains(&gx) || !(0..16).contains(&gz) || !(0..4).contains(&sx) || !(0..4).contains(&sz) {
+        return None;
+    }
+    let cx = -8000.0 + gx as f32 * 1000.0 + sx as f32 * 250.0 + 125.0;
+    let cz = -8000.0 + gz as f32 * 1000.0 + sz as f32 * 250.0 + 125.0;
+    Some([cx, 0.0, cz])
+}
+
+/// Open-world 250 m Gridify scenery pieces (bridges, castle walls, cliffs and roads placed
+/// on the 16 × 16 km grid instead of heightmaps).
+fn read_gridify(actors: &BTreeMap<String, ActorInfo>) -> Vec<StagePlacement> {
+    let mut out = vec![];
+    for (name, info) in actors {
+        let (Some(translate), Some(model)) = (parse_gridify_cell(name), &info.model) else { continue };
+        out.push(StagePlacement {
+            name: name.clone(),
+            source: "Gridify".into(),
+            model: Some(model.clone()),
+            aabb: info.aabb,
+            translate,
+            rotate: [0.0; 3],
+            scale: [1.0; 3],
+        });
+    }
+    out
 }
 
 /// One course file's `CountActor` and `Collects`, as numbers by name.
@@ -692,5 +761,9 @@ mod tests {
         assert_eq!(gyml_name("Work/Gyml/ActorGParam/CmnObj_Coin000_A_00.gear__ActorGParam.gyml"), "CmnObj_Coin000_A_00");
         assert_eq!(model_rel(Path::new("/nonexistent"), "Work/Model/CmnObj/CmnObj_ItemBox000/output/CmnObj_ItemBox000_A.fmdb"), None);
         assert_eq!(model_rel(Path::new("/"), "Model/x.fmdb"), None);
+        // X00_Z07_23 -> gx=0, gz=7, sz=2, sx=3 -> (-7125, 0, -375)
+        assert_eq!(parse_gridify_cell("Gridify_Game03_X00_Z07_23"), Some([-7125.0, 0.0, -375.0]));
+        assert_eq!(parse_gridify_cell("Piece_Gridify_Game03_X00_Z07"), None);
+        assert_eq!(parse_gridify_cell("Gridify_Game03_X16_Z00_00"), None);
     }
 }

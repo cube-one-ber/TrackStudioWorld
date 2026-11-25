@@ -68,6 +68,8 @@ pub mod qobject {
         #[qinvokable]
         fn open_course(self: Pin<&mut Editor>, file: &QString, mod_name: &QString) -> bool;
         #[qinvokable]
+        fn open_course_file(self: Pin<&mut Editor>, url_or_path: &QString) -> bool;
+        #[qinvokable]
         fn save(self: Pin<&mut Editor>) -> QString;
         #[qinvokable]
         fn undo(self: Pin<&mut Editor>);
@@ -95,6 +97,8 @@ pub mod qobject {
         #[qinvokable]
         fn selection_mesh(self: &Editor) -> QVariant;
         #[qinvokable]
+        fn respawn_mesh(self: &Editor) -> QVariant;
+        #[qinvokable]
         fn gizmo(self: &Editor) -> QString;
         #[qinvokable]
         fn focus_target(self: &Editor, all: bool) -> QString;
@@ -119,7 +123,11 @@ pub mod qobject {
         #[qinvokable]
         fn select_hash(self: Pin<&mut Editor>, hash: &QString, additive: bool);
         #[qinvokable]
-        fn select_group(self: Pin<&mut Editor>, key: &QString);
+        fn select_group(self: Pin<&mut Editor>, key: &QString, additive: bool);
+        #[qinvokable]
+        fn select_range(self: Pin<&mut Editor>, json: &QString, additive: bool);
+        #[qinvokable]
+        fn set_extra_stage(self: Pin<&mut Editor>, name: &QString, on: bool);
         #[qinvokable]
         fn clear_selection(self: Pin<&mut Editor>);
         #[qinvokable]
@@ -148,6 +156,12 @@ pub mod qobject {
 
         #[qinvokable]
         fn add_actor(self: Pin<&mut Editor>, name: &QString, origin: &QVector3D, dir: &QVector3D, yaw: f64) -> bool;
+        #[qinvokable]
+        fn add_respawn_point(self: Pin<&mut Editor>, origin: &QVector3D, dir: &QVector3D, yaw: f64) -> bool;
+        #[qinvokable]
+        fn orient_to_path(self: Pin<&mut Editor>);
+        #[qinvokable]
+        fn set_respawn_prop(self: Pin<&mut Editor>, prop: &QString, value: &QString);
         #[qinvokable]
         fn duplicate(self: Pin<&mut Editor>, rx: f64, rz: f64);
         #[qinvokable]
@@ -567,17 +581,33 @@ impl qobject::Editor {
             self.as_mut().log(format!("Could not open {file}: {e}"));
             return false;
         }
-        let title = {
-            let d = self.st().doc.as_ref().unwrap();
-            format!(
-                "{}{}",
-                d.file.trim_start_matches("Banc/"),
-                if d.from_mod { format!("  [{}]", self.st().mod_name) } else { String::new() }
-            )
+        self.finish_open();
+        true
+    }
+
+    fn open_course_file(mut self: Pin<&mut Self>, url_or_path: &QString) -> bool {
+        let p = crate::config::url_path(&url_or_path.to_string(), cfg!(windows));
+        let path = crate::config::expand(&p);
+        let res = self.as_mut().stm().open_path(&path);
+        if let Err(e) = res {
+            self.as_mut().log(format!("Could not open {}: {e}", path.display()));
+            return false;
+        }
+        self.finish_open();
+        true
+    }
+
+    fn finish_open(mut self: Pin<&mut Self>) {
+        let (file, title, from) = {
+            let s = self.st();
+            let d = s.doc.as_ref().unwrap();
+            let title =
+                format!("{}{}", d.file.trim_start_matches("Banc/"), if d.from_mod { format!("  [{}]", s.mod_name) } else { String::new() });
+            let from = if d.from_mod { s.mod_name.clone() } else { String::new() };
+            (d.file.clone(), title, from)
         };
         self.as_mut().set_course_title(q(title));
-        let from = if self.st().doc.as_ref().is_some_and(|d| d.from_mod) { self.st().mod_name.clone() } else { String::new() };
-        self.as_mut().stm().prefs.opened(&file.to_string(), &from);
+        self.as_mut().stm().prefs.opened(&file, &from);
         let mn = self.st().mod_name.clone();
         self.as_mut().rust_mut().get_mut().mod_name = q(&mn);
         self.as_mut().mod_name_changed();
@@ -604,17 +634,33 @@ impl qobject::Editor {
         let v = *self.stages_revision() + 1;
         self.as_mut().set_stages_revision(v);
         self.load_models();
-        true
     }
 
-    /// Read the course's models from the romfs on a worker thread, decoding their textures into
-    /// the cache: stages first (each shown as it arrives, then the ground BVH), then object
-    /// models.
+    /// Recompute background scenery (terrain, stage models, Gridify pieces) and stream any newly
+    /// requested models on the worker thread.
+    fn reload_world_scenery(mut self: Pin<&mut Self>) {
+        let st = self.as_mut().stm();
+        st.rebuild_stages();
+        st.load_gen += 1;
+        let v = *self.stages_revision() + 1;
+        self.as_mut().set_stages_revision(v);
+        self.as_mut().bump(Refresh::ALL);
+        self.load_models();
+    }
+
+    /// Read the course's models from the romfs (checking the active mod first) on a worker
+    /// thread, decoding their textures into the cache: stages first (each shown as it arrives,
+    /// then the ground BVH), then object models.
     fn load_models(mut self: Pin<&mut Self>) {
         let wanted = self.st().wanted_models();
         let cache = self.st().models.clone();
         let romfs = self.st().cfg.romfs.clone();
+        let mod_romfs = self.st().active_mod_romfs();
         let stages = self.st().stages.clone();
+        let show_terrain = self.st().show_terrain;
+        let show_stage = self.st().show_stage;
+        let show_gridify = self.st().show_gridify;
+        let extra_stages = self.st().extra_stages.clone();
         let course = self.st().doc.as_ref().map(|d| scene::course_points(&d.root)).unwrap_or_default();
         let generation = self.st().load_gen;
         self.as_mut().set_models_wanted(wanted.len() as i32);
@@ -624,7 +670,19 @@ impl qobject::Editor {
         std::thread::spawn(move || {
             let mut loaded = already;
             let mut stage_done = false;
-            let finish_stages = |cache: &crate::state::ModelCache| Arc::new(scene::stage_bvh(&stages, |m| cache.get(m)));
+            let visible_stages: Vec<_> = stages
+                .into_iter()
+                .filter(|s| {
+                    if s.name == crate::state::TERRAIN {
+                        show_terrain
+                    } else if s.source == crate::state::GRIDIFY_SOURCE {
+                        show_gridify
+                    } else {
+                        show_stage || extra_stages.contains(&s.name)
+                    }
+                })
+                .collect();
+            let finish_stages = |cache: &crate::state::ModelCache| Arc::new(scene::stage_bvh(&visible_stages, |m| cache.get(m)));
             for (i, (rel, is_stage)) in wanted.iter().enumerate() {
                 if !*is_stage && !stage_done {
                     stage_done = true;
@@ -639,16 +697,22 @@ impl qobject::Editor {
                     });
                 }
                 if !cache.has(rel) {
-                    let model = match mkwtrack::terrain::parse_key(rel) {
-                        Some(region) => mkwtrack::terrain::load(&romfs, region, &course),
-                        None => bfres::load(&romfs, rel),
+                    let model = match mkwtrack::terrain::parse_key_with_quality(rel) {
+                        Some((region, quality)) => mkwtrack::terrain::load_with_quality(&romfs, region, &course, quality),
+                        None => {
+                            if let Some(mr) = mod_romfs.as_deref().filter(|mr| mr.join(rel).is_file()) {
+                                bfres::load(mr, rel)
+                            } else {
+                                bfres::load(&romfs, rel)
+                            }
+                        }
                     };
                     match model {
                         Ok(m) => {
                             let mut names: Vec<String> = m.parts.iter().filter_map(|p| p.texture.clone()).collect();
                             names.sort();
                             names.dedup();
-                            let errors = crate::textures::ensure_all(&romfs, &names);
+                            let errors = crate::textures::ensure_all(&romfs, mod_romfs.as_deref(), &names);
                             if !errors.is_empty() {
                                 let msg = format!("Model {rel}: {} texture(s) not decoded, first: {}", errors.len(), errors[0]);
                                 let _ = qt.queue(move |ed| ed.log(msg));
@@ -760,7 +824,8 @@ impl qobject::Editor {
         for &x in &p.indices {
             idx.append(x as i32);
         }
-        let tex = p.texture.as_deref().and_then(crate::textures::cached);
+        let mod_romfs = self.st().active_mod_romfs();
+        let tex = p.texture.as_deref().and_then(|t| crate::textures::cached_for(t, mod_romfs.as_deref()));
         map(vec![
             ("positions", vec3_list(&p.positions)),
             ("normals", vec3_list(&p.normals)),
@@ -802,6 +867,14 @@ impl qobject::Editor {
         let s = self.st();
         match (&s.doc, &s.cat) {
             (Some(d), Some(c)) => lines_variant(&scene::selection_outline(d, c, &s.selection.iter().copied().collect())),
+            _ => lines_variant(&Lines::default()),
+        }
+    }
+
+    fn respawn_mesh(&self) -> QVariant {
+        let s = self.st();
+        match (&s.doc, &s.cat) {
+            (Some(d), Some(c)) => lines_variant(&scene::respawn_overlay(d, c, &s.view, &s.selection.iter().copied().collect())),
             _ => lines_variant(&Lines::default()),
         }
     }
@@ -899,15 +972,74 @@ impl qobject::Editor {
         } else {
             st.selection = vec![h];
         }
+        st.handle = None;
         st.rebuild();
         self.bump(Refresh::SELECTION);
     }
 
-    fn select_group(mut self: Pin<&mut Self>, key: &QString) {
+    fn select_group(mut self: Pin<&mut Self>, key: &QString, additive: bool) {
         let st = self.as_mut().stm();
-        st.selection = st.group_hashes(&key.to_string());
+        let group = st.group_hashes(&key.to_string());
+        if additive {
+            let have: std::collections::HashSet<u64> = st.selection.iter().copied().collect();
+            if !group.is_empty() && group.iter().all(|h| have.contains(h)) {
+                let drop: std::collections::HashSet<u64> = group.into_iter().collect();
+                st.selection.retain(|h| !drop.contains(h));
+            } else {
+                for h in group {
+                    if !have.contains(&h) {
+                        st.selection.push(h);
+                    }
+                }
+            }
+        } else {
+            st.selection = group;
+        }
+        st.handle = None;
         st.rebuild();
         self.bump(Refresh::SELECTION);
+    }
+
+    /// Select a range of outliner rows (JSON array of row keys `h:...`, `a:...`, `r:...`).
+    fn select_range(mut self: Pin<&mut Self>, json: &QString, additive: bool) {
+        let keys: Vec<String> = serde_json::from_str(&json.to_string()).unwrap_or_default();
+        let st = self.as_mut().stm();
+        let Some(doc) = st.doc.as_ref() else { return };
+        let mut range_hashes = vec![];
+        let mut seen_range = std::collections::HashSet::new();
+        for k in &keys {
+            if let Some(h) = k.strip_prefix("h:").and_then(|s| s.parse::<u64>().ok()) {
+                if doc.index.contains_key(&h) && seen_range.insert(h) {
+                    range_hashes.push(h);
+                }
+            } else if k.starts_with("a:") || k.starts_with("r:") {
+                for h in st.group_hashes(k) {
+                    if seen_range.insert(h) {
+                        range_hashes.push(h);
+                    }
+                }
+            }
+        }
+        if additive {
+            let have: std::collections::HashSet<u64> = st.selection.iter().copied().collect();
+            st.selection.extend(range_hashes.into_iter().filter(|h| !have.contains(h)));
+        } else {
+            st.selection = range_hashes;
+        }
+        st.handle = None;
+        st.rebuild();
+        self.bump(Refresh::SELECTION);
+    }
+
+    fn set_extra_stage(mut self: Pin<&mut Self>, name: &QString, on: bool) {
+        let n = name.to_string();
+        let st = self.as_mut().stm();
+        if on {
+            st.extra_stages.insert(n);
+        } else {
+            st.extra_stages.remove(&n);
+        }
+        self.reload_world_scenery();
     }
 
     /// Esc: a picked curve handle goes back to its point; otherwise nothing stays selected.
@@ -1080,6 +1212,113 @@ impl qobject::Editor {
         }
     }
 
+    /// Place a respawn point suited to the open course at the clicked/centre ground position,
+    /// oriented along the nearest path when one is nearby.
+    fn add_respawn_point(mut self: Pin<&mut Self>, origin: &QVector3D, dir: &QVector3D, yaw: f64) -> bool {
+        let name = self.st().default_respawn_actor().to_string();
+        let st = self.as_mut().stm();
+        let (Some(cat), true) = (st.cat.clone(), st.doc.is_some()) else { return false };
+        let pos = st.placement_at(&ray(origin, dir), st.working_height());
+        let doc = st.doc.as_mut().unwrap();
+        let Some(h) = doc.add_actor(&cat, &name, pos, yaw as f32) else { return false };
+        // If there is a nearby path point, align the respawn point to face along it
+        if let Some(rot) = scene::nearest_path_rotation(doc, pos)
+            && let Some(loc) = doc.index.get(&h).copied()
+            && let Some(e) = doc.get_mut(loc)
+        {
+            e.insert("Rotate", Byml::floats(&rot));
+        }
+        doc.relabel_undo("Add Respawn Point");
+        st.selection = vec![h];
+        self.as_mut().log(format!("Added respawn point ({name})"));
+        self.changed();
+        true
+    }
+
+    /// Rotate selected object(s) (e.g. respawn points) to match the nearest path point's heading.
+    fn orient_to_path(mut self: Pin<&mut Self>) {
+        let st = self.as_mut().stm();
+        let sel = st.selection.clone();
+        let Some(doc) = st.doc.as_mut() else { return };
+        let n = doc.orient_actors_to_path(&sel);
+        if n > 0 {
+            self.as_mut().log(format!("Aligned {n} object(s) along the nearest path"));
+            self.changed();
+        } else {
+            self.log("No path points in this course to align with");
+        }
+    }
+
+    /// Set a respawn property (`recoverType`, `recoverDash`, `jugemLeft`, `isGlide`) on all
+    /// matching items in the selection, as one undo step.
+    fn set_respawn_prop(mut self: Pin<&mut Self>, prop: &QString, value: &QString) {
+        let p = prop.to_string();
+        let v = value.to_string();
+        let st = self.as_mut().stm();
+        let sel = st.selection.clone();
+        let Some(doc) = st.doc.as_mut() else { return };
+        match p.as_str() {
+            "recoverType" => {
+                let targets: Vec<u64> = sel
+                    .iter()
+                    .copied()
+                    .filter(
+                        |h| matches!(doc.index.get(h), Some(Loc::Point(r, _)) if doc.rails()[*r].str_or("Name", "") == "RoutePathGraph"),
+                    )
+                    .collect();
+                if targets.is_empty() {
+                    return;
+                }
+                let val = v.parse::<i32>().ok().filter(|&n| n != 0).map(Byml::I32);
+                doc.set_dynamic_many(&targets, "RecoverType", val);
+                doc.relabel_undo("Set Respawn Type");
+            }
+            "recoverDash" => {
+                let targets: Vec<u64> = sel
+                    .iter()
+                    .copied()
+                    .filter(
+                        |h| matches!(doc.index.get(h), Some(Loc::Point(r, _)) if doc.rails()[*r].str_or("Name", "") == "RoutePathGraph"),
+                    )
+                    .collect();
+                if targets.is_empty() {
+                    return;
+                }
+                let on = v == "true";
+                doc.set_dynamic_many(&targets, "IsRecoverDash", on.then_some(Byml::Bool(true)));
+                doc.relabel_undo("Set Respawn Boost");
+            }
+            "jugemLeft" => {
+                let targets: Vec<u64> = sel
+                    .iter()
+                    .copied()
+                    .filter(|h| matches!(doc.index.get(h), Some(Loc::Point(r, _)) if doc.rails()[*r].str_or("Name", "") == mkwtrack::checkpoints::LAP))
+                    .collect();
+                if targets.is_empty() {
+                    return;
+                }
+                let on = v == "true";
+                doc.set_dynamic_many(&targets, "IsJugemLeft", on.then_some(Byml::Bool(true)));
+                doc.relabel_undo("Set Lakitu Side");
+            }
+            "isGlide" => {
+                let targets: Vec<u64> = sel
+                    .iter()
+                    .copied()
+                    .filter(|h| matches!(doc.find(*h), Some((Loc::Actor(_), a)) if a.str_or("Name", "") == "SystemObj_PrioRecoverPoint"))
+                    .collect();
+                if targets.is_empty() {
+                    return;
+                }
+                let on = v == "true";
+                doc.set_dynamic_many(&targets, "IsGlide", on.then_some(Byml::Bool(true)));
+                doc.relabel_undo("Set Glide Respawn");
+            }
+            _ => return,
+        }
+        self.changed();
+    }
+
     fn duplicate(mut self: Pin<&mut Self>, rx: f64, rz: f64) {
         let st = self.as_mut().stm();
         let sel = st.selection.clone();
@@ -1202,15 +1441,42 @@ impl qobject::Editor {
     }
 
     fn set_view_option(mut self: Pin<&mut Self>, name: &QString, on: bool) {
+        let opt = name.to_string();
+        let mut reload_scenery = false;
         let st = self.as_mut().stm();
-        match name.to_string().as_str() {
+        match opt.as_str() {
             "stage" => st.show_stage = on,
-            "terrain" => st.show_terrain = on,
+            "terrain" => {
+                st.show_terrain = on;
+                if on {
+                    reload_scenery = true;
+                }
+            }
+            "terrain_hq" => {
+                st.high_quality_terrain = on;
+                st.prefs.set("terrainHq", json!(on));
+                reload_scenery = true;
+            }
+            "gridify" => {
+                st.show_gridify = on;
+                st.prefs.set("showGridify", json!(on));
+                reload_scenery = true;
+            }
+            "distant" => {
+                st.load_distant_world = on;
+                st.prefs.set("distantWorld", json!(on));
+                reload_scenery = true;
+            }
+            "respawns" => st.view.show_respawns = on,
             "models" => st.view.models = on,
             "xray" => st.xray = on,
             "widths" => st.view.widths = on,
             "snap" => st.snap_ground = on,
             _ => {}
+        }
+        if reload_scenery && st.doc.is_some() {
+            self.reload_world_scenery();
+            return;
         }
         st.rebuild();
         let v = *self.stages_revision() + 1;
@@ -1619,6 +1885,7 @@ impl qobject::Editor {
         let msg = match n.as_str() {
             "" => "Clicks pick anything".to_string(),
             "objects" => "Clicks pick objects only".to_string(),
+            "respawns" => "Clicks pick respawn points only; Alt+Click places a new respawn point".to_string(),
             "paths" => "Clicks pick path points only".to_string(),
             t => format!("Clicks pick {t} points only; Alt+Click starts a new {t} or extends the selected one"),
         };
@@ -1748,12 +2015,13 @@ impl qobject::Editor {
 
     fn recent_courses(&self) -> QString {
         let s = self.st();
+        let ws = s.ws();
         q(json!(s
             .prefs
             .recent
             .iter()
-            .filter(|r| s.cfg.romfs.join(&r.file).exists())
-            .map(|r| json!({"file": r.file, "mod": r.mod_name, "name": r.file.trim_start_matches("Banc/").trim_end_matches(".bcett.byml.zs")}))
+            .filter(|r| ws.exists(&r.file, Some(&r.mod_name)))
+            .map(|r| json!({"file": r.file, "mod": r.mod_name, "name": r.file.trim_start_matches("Banc/").trim_end_matches(".bcett.byml.zs").trim_end_matches(".bcett.byml")}))
             .collect::<Vec<_>>())
         .to_string())
     }

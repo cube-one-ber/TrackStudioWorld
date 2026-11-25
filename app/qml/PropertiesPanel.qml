@@ -292,6 +292,89 @@ QQC2.ScrollView {
                         ? "Checkpoint " + Number(pp.s.checkpoint) + " after the last start, lap check or goal point."
                         : "Not numbered yet: its lap loop needs a start, lap check or goal point."
             }
+            QQC2.CheckBox {
+                readonly property bool all: pp.s.kind === "point" ? pp.s.jugemLeft === true
+                                                                  : (pp.s.jugemLeft || 0) === (pp.s.lapPoints || 0)
+                readonly property bool some: pp.s.kind === "multi" && (pp.s.jugemLeft || 0) > 0 && !all
+                text: pp.s.kind === "multi" ? "Lakitu on left (" + (pp.s.jugemLeft || 0) + " of " + (pp.s.lapPoints || 0) + ")" : "Lakitu on left (IsJugemLeft)"
+                tristate: some
+                checkState: all ? Qt.Checked : some ? Qt.PartiallyChecked : Qt.Unchecked
+                nextCheckState: function () { return all ? Qt.Unchecked : Qt.Checked; }
+                onClicked: pp.editor.setRespawnProp("jugemLeft", all ? "false" : "true")
+                QQC2.ToolTip.text: "Sets Dynamic.IsJugemLeft on LapPathGraph points so Lakitu approaches from the left side."
+                QQC2.ToolTip.visible: hovered
+                QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+            }
+        }
+
+        // respawn point actors (SystemObj_PrioRecoverPoint, SystemObj_RespawnPoint_00, etc.)
+        Section {
+            title: "Respawn Point"
+            visible: (pp.s.kind === "actor" && pp.s.isRespawn === true) || (pp.s.kind === "multi" && (pp.s.respawnActors || 0) > 0)
+            QQC2.Label {
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                color: Kirigami.Theme.disabledTextColor
+                text: "Lakitu drops racers here facing along the green arrow (+Z)."
+            }
+            QQC2.CheckBox {
+                visible: pp.s.kind === "actor" && pp.s.name === "SystemObj_PrioRecoverPoint"
+                text: "Glide on respawn (IsGlide)"
+                checked: pp.s.isGlide === true
+                onToggled: pp.editor.setRespawnProp("isGlide", checked ? "true" : "false")
+                QQC2.ToolTip.text: "Sets Dynamic.IsGlide so racers respawn gliding out of this point."
+                QQC2.ToolTip.visible: hovered
+                QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+            }
+            QQC2.Button {
+                Layout.fillWidth: true
+                text: "Face Along Nearest Path"
+                icon.name: "transform-rotate"
+                onClicked: pp.editor.orientToPath()
+                QQC2.ToolTip.text: "Rotate selected respawn point(s) to match the heading of the nearest path point."
+                QQC2.ToolTip.visible: hovered
+                QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+            }
+        }
+
+        // RoutePathGraph respawn settings (RecoverType, IsRecoverDash)
+        Section {
+            title: "Respawn"
+            visible: (pp.s.kind === "point" && pp.s.route === true) || (pp.s.kind === "multi" && (pp.s.routePoints || 0) > 0)
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Kirigami.Units.smallSpacing
+                QQC2.Label {
+                    text: "RecoverType"
+                    Layout.preferredWidth: Kirigami.Units.gridUnit * 5.5
+                }
+                QQC2.ComboBox {
+                    id: recoverCombo
+                    Layout.fillWidth: true
+                    readonly property var curVal: pp.s.recoverType
+                    readonly property bool isMixed: pp.s.kind === "multi" && (curVal === null || curVal === undefined)
+                    model: ["0 — Default", "1 — Type 1", "2 — Type 2", "3 — Type 3", "4 — Type 4", "5 — Type 5"]
+                    currentIndex: isMixed ? -1 : Math.max(0, Math.min(5, Number(curVal || 0)))
+                    displayText: isMixed ? "Mixed" : currentText
+                    onActivated: (idx) => pp.editor.setRespawnProp("recoverType", String(idx))
+                    QQC2.ToolTip.text: "Dynamic.RecoverType on RoutePathGraph points controls Lakitu's respawn behaviour along this section."
+                    QQC2.ToolTip.visible: hovered
+                    QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+                }
+            }
+            QQC2.CheckBox {
+                readonly property bool all: pp.s.kind === "point" ? pp.s.recoverDash === true
+                                                                  : (pp.s.recoverDash || 0) === (pp.s.routePoints || 0)
+                readonly property bool some: pp.s.kind === "multi" && (pp.s.recoverDash || 0) > 0 && !all
+                text: pp.s.kind === "multi" ? "Respawn boost (" + (pp.s.recoverDash || 0) + " of " + (pp.s.routePoints || 0) + ")" : "Respawn boost (IsRecoverDash)"
+                tristate: some
+                checkState: all ? Qt.Checked : some ? Qt.PartiallyChecked : Qt.Unchecked
+                nextCheckState: function () { return all ? Qt.Unchecked : Qt.Checked; }
+                onClicked: pp.editor.setRespawnProp("recoverDash", all ? "false" : "true")
+                QQC2.ToolTip.text: "Sets Dynamic.IsRecoverDash so racers get a boost when Lakitu drops them at this point."
+                QQC2.ToolTip.visible: hovered
+                QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+            }
         }
 
         Section {

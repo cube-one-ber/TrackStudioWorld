@@ -13,7 +13,12 @@ QQC2.Menu {
 
     QQC2.MenuItem { text: "Stage models"; checkable: true; checked: menu.st.stage === true; onTriggered: menu.editor.setViewOption("stage", checked) }
     QQC2.MenuItem { text: "Terrain"; checkable: true; checked: menu.st.terrain === true; onTriggered: menu.editor.setViewOption("terrain", checked) }
+    QQC2.MenuItem { text: "High-quality terrain"; checkable: true; checked: menu.st.terrainHq === true; onTriggered: menu.editor.setViewOption("terrain_hq", checked) }
+    QQC2.MenuItem { text: "Nearby Gridify pieces"; checkable: true; checked: menu.st.gridify === true; onTriggered: menu.editor.setViewOption("gridify", checked) }
+    QQC2.MenuItem { text: "Surrounding terrain & pieces"; checkable: true; checked: menu.st.distantWorld === true; onTriggered: menu.editor.setViewOption("distant", checked) }
+    QQC2.MenuSeparator {}
     QQC2.MenuItem { text: "Object models (off: boxes)"; checkable: true; checked: menu.st.models === true; onTriggered: menu.editor.setViewOption("models", checked) }
+    QQC2.MenuItem { text: "Respawn points"; checkable: true; checked: menu.st.respawns !== false; onTriggered: menu.editor.setViewOption("respawns", checked) }
     QQC2.MenuItem { text: "Paths drawn on top"; checkable: true; checked: menu.st.xray === true; onTriggered: menu.editor.setViewOption("xray", checked) }
     QQC2.MenuItem { text: "Widths on every path"; checkable: true; checked: menu.st.widths === true; onTriggered: menu.editor.setViewOption("widths", checked) }
     QQC2.MenuSeparator {}

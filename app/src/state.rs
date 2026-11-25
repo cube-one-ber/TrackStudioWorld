@@ -5,25 +5,34 @@ use crate::config::{Config, cache_dir, emulator_load_dir};
 use glam::{Mat4, Quat, Vec3};
 use mkwtrack::banc::{course_base, hash_of};
 use mkwtrack::byml::{Byml, vec3};
-use mkwtrack::catalog::{ActorInfo, Catalog, Param, StagePlacement, banc_files};
+use mkwtrack::catalog::{ActorInfo, Catalog, Param, StagePlacement, banc_files, find_model_for_actor, read_courses, read_stages};
 use mkwtrack::check;
 use mkwtrack::doc::{Document, Loc};
 use mkwtrack::math::quat_zyx;
 use mkwtrack::model::Model;
 use mkwtrack::raycast::{Bvh, Frustum, Ray, ray_line_param, ray_plane};
-use mkwtrack::scene::{self, Scene, ViewOptions, stages_for};
-use mkwtrack::terrain;
+use mkwtrack::scene::{self, Scene, ViewOptions, gridify_for, stages_for_margin};
+use mkwtrack::terrain::{self, Quality as TerrainQuality};
 use mkwtrack::tools::Clipboard;
 use mkwtrack::typedjson;
-use mkwtrack::workspace::Workspace;
+use mkwtrack::workspace::{Loaded, Workspace};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// Stage name of the open world's ground in `State::stages` (see [`terrain`]).
 pub const TERRAIN: &str = "Terrain";
+/// Source tag of Gridify scenery pieces in `State::stages`.
+pub const GRIDIFY_SOURCE: &str = "Gridify";
 /// Metres of ground shown around a course's objects and paths.
 const TERRAIN_MARGIN: f32 = 400.0;
+/// Metres of ground shown when "Surrounding terrain & pieces" is enabled.
+const TERRAIN_MARGIN_DISTANT: f32 = 2000.0;
+const STAGE_MARGIN: f32 = 60.0;
+const STAGE_MARGIN_DISTANT: f32 = 2000.0;
+const GRIDIFY_MARGIN: f32 = 200.0;
+const GRIDIFY_MARGIN_DISTANT: f32 = 1000.0;
 
 #[derive(Default)]
 pub struct ModelCache {
@@ -85,6 +94,13 @@ pub struct State {
     pub snap_ground: bool,
     pub show_stage: bool,
     pub show_terrain: bool,
+    pub show_gridify: bool,
+    pub high_quality_terrain: bool,
+    pub load_distant_world: bool,
+    /// extra world stage models toggled on from the sidebar even when not directly nearby
+    pub extra_stages: HashSet<String>,
+    /// stage placements overridden or added by the opened mod's WorldResident
+    pub mod_stages: Vec<StagePlacement>,
     pub expanded: HashSet<String>,
     pub scene: Option<Scene>,
     pub models: Arc<ModelCache>,
@@ -129,6 +145,8 @@ fn deg(v: [f32; 3]) -> Value {
 
 impl State {
     pub fn new(cfg: Config) -> State {
+        let prefs = crate::prefs::Prefs::load();
+        let pref_bool = |k: &str, default: bool| prefs.values.get(k).and_then(|v| v.as_bool()).unwrap_or(default);
         State {
             mod_name: "MyTrackMod".into(),
             cfg,
@@ -140,6 +158,11 @@ impl State {
             snap_ground: false,
             show_stage: true,
             show_terrain: true,
+            show_gridify: pref_bool("showGridify", true),
+            high_quality_terrain: pref_bool("terrainHq", false),
+            load_distant_world: pref_bool("distantWorld", false),
+            extra_stages: HashSet::new(),
+            mod_stages: vec![],
             expanded: HashSet::new(),
             scene: None,
             models: Arc::new(ModelCache::default()),
@@ -156,8 +179,14 @@ impl State {
             pick_filter: String::new(),
             handle: None,
             snap: Snap { step: 0.0, angle: 0.0 },
-            prefs: crate::prefs::Prefs::load(),
+            prefs,
         }
+    }
+
+    /// The active mod's `romfs` folder when it exists on disk, for loading custom course models
+    /// and textures before falling back to the game's romfs.
+    pub fn active_mod_romfs(&self) -> Option<PathBuf> {
+        self.ws().mod_romfs(&self.mod_name).ok().filter(|p| p.is_dir())
     }
 
     pub fn log(&mut self, msg: impl Into<String>) {
@@ -186,22 +215,50 @@ impl State {
         let f = filter.to_lowercase();
         let ws = self.ws();
         let mods = ws.mods();
+        let vanilla: BTreeSet<String> = banc_files(&self.cfg.romfs).into_iter().collect();
+        let mut all_files: BTreeMap<String, Vec<String>> = vanilla.iter().map(|rel| (rel.clone(), vec![])).collect();
+        let mut extra_courses = BTreeMap::new();
+        for m in &mods {
+            let Ok(mromfs) = ws.mod_romfs(m) else { continue };
+            for rel in banc_files(&mromfs) {
+                all_files.entry(rel).or_default().push(m.clone());
+            }
+            for (base, list) in read_courses(&mromfs) {
+                extra_courses.entry(base).or_insert(list);
+            }
+        }
         let mut out = vec![];
-        for rel in banc_files(&self.cfg.romfs) {
+        for (rel, modded) in all_files {
             let base = course_base(&rel);
-            let info = cat.data.courses.get(&base).and_then(|v| v.first());
+            let info = extra_courses.get(&base).or_else(|| cat.data.courses.get(&base)).and_then(|v| v.first());
             let display = info.map(|i| i.display.clone()).unwrap_or_default();
             if !f.is_empty() && !rel.to_lowercase().contains(&f) && !display.to_lowercase().contains(&f) {
                 continue;
             }
-            let group =
-                if rel.contains("/World_Game03") { "Free-roam grid".to_string() } else { base.split('_').next().unwrap_or("").to_string() };
-            let modded: Vec<&String> = mods.iter().filter(|m| self.cfg.mods.join(m).join("romfs").join(&rel).exists()).collect();
-            out.push(json!({"file": rel, "name": rel.trim_start_matches("Banc/").trim_end_matches(".bcett.byml.zs"), "display": display,
+            let custom = !vanilla.contains(&rel);
+            let group = if custom {
+                "Custom courses".to_string()
+            } else if rel.contains("/World_Game03") {
+                "Free-roam grid".to_string()
+            } else {
+                base.split('_').next().unwrap_or("").to_string()
+            };
+            let name = rel.trim_start_matches("Banc/").trim_end_matches(".bcett.byml.zs").trim_end_matches(".bcett.byml");
+            out.push(json!({"file": rel, "name": name, "display": display, "custom": custom,
                             "rule": info.map(|i| i.rule.clone()).unwrap_or_default(), "group": group, "mods": modded}));
         }
-        let order =
-            ["Race", "LongRally", "InterStageEx1", "InterStageEx2", "BalloonBattle", "CoinBattle", "BombBattle", "Mission", "Parade"];
+        let order = [
+            "Custom courses",
+            "Race",
+            "LongRally",
+            "InterStageEx1",
+            "InterStageEx2",
+            "BalloonBattle",
+            "CoinBattle",
+            "BombBattle",
+            "Mission",
+            "Parade",
+        ];
         out.sort_by_key(|v| {
             let g = v["group"].as_str().unwrap_or("").to_string();
             (order.iter().position(|o| *o == g).unwrap_or(99), g, v["file"].as_str().unwrap_or("").to_string())
@@ -210,26 +267,42 @@ impl State {
     }
 
     pub fn open(&mut self, file: &str, m: Option<&str>) -> mkwtrack::Result<()> {
-        let cat = self.cat.clone().ok_or("the game catalog is still loading")?;
         let loaded = self.ws().load(file, m)?;
+        self.open_loaded(loaded, m)
+    }
+
+    pub fn open_path(&mut self, path: &Path) -> mkwtrack::Result<()> {
+        let (loaded, detected_mod) = self.ws().load_path(path)?;
+        self.open_loaded(loaded, detected_mod.as_deref())
+    }
+
+    fn open_loaded(&mut self, loaded: Loaded, m: Option<&str>) -> mkwtrack::Result<()> {
+        let cat = self.cat.clone().ok_or("the game catalog is still loading")?;
+        let file = loaded.file.clone();
         let doc = Document::new(loaded);
-        self.stages = stages_for(&cat, &doc.root, 12).into_iter().cloned().collect();
-        // the open world's ground goes first, so it shows while the stage models load
-        if let Some(region) = terrain::region_around(&scene::course_points(&doc.root), TERRAIN_MARGIN) {
-            self.stages.insert(
-                0,
-                StagePlacement {
-                    name: TERRAIN.into(),
-                    source: String::new(),
-                    model: Some(terrain::model_key(region)),
-                    aabb: None,
-                    translate: [0.0; 3],
-                    rotate: [0.0; 3],
-                    scale: [1.0; 3],
-                },
-            );
+        if let Some(m) = m.filter(|m| !m.is_empty()) {
+            self.mod_name = m.to_string();
         }
+        // Resolve custom models (not in vanilla catalog) and mod-overridden WorldResident stages
+        let mod_romfs = self.active_mod_romfs();
+        let mut custom_models = BTreeMap::new();
+        for a in doc.actors() {
+            let name = a.str_or("Name", "");
+            if cat.actor(a.str_or("Gyaml", "")).and_then(|i| i.model.as_ref()).is_none() && !custom_models.contains_key(name) {
+                let found = mod_romfs
+                    .as_deref()
+                    .and_then(|mr| find_model_for_actor(mr, name))
+                    .or_else(|| find_model_for_actor(&self.cfg.romfs, name));
+                if let Some(rel) = found {
+                    custom_models.insert(name.to_string(), rel);
+                }
+            }
+        }
+        self.view.custom_models = custom_models;
+        self.mod_stages = mod_romfs.as_deref().map(|mr| read_stages(mr, &cat.data.actors)).unwrap_or_default();
+        self.extra_stages.clear();
         self.doc = Some(doc);
+        self.rebuild_stages();
         self.selection.clear();
         self.expanded.clear();
         self.drag = None;
@@ -239,30 +312,109 @@ impl State {
         self.view.hidden_rails.clear();
         self.ground = None;
         self.load_gen += 1;
-        if let Some(m) = m.filter(|m| !m.is_empty()) {
-            self.mod_name = m.to_string();
-        }
         self.rebuild();
         let d = self.doc.as_ref().unwrap();
         let pts: usize = d.rails().iter().map(|r| Document::points(r).len()).sum();
+        let stage_count = self.stages.iter().filter(|s| s.name != TERRAIN && s.source != GRIDIFY_SOURCE).count();
+        let gridify_count = self.stages.iter().filter(|s| s.source == GRIDIFY_SOURCE).count();
         self.log(format!(
-            "Opened {file}{}: {} objects, {} paths, {pts} points, {} stage model(s){}",
+            "Opened {file}{}: {} objects, {} paths, {pts} points, {stage_count} stage model(s){}{}",
             if d.from_mod { format!(" from mod \"{}\"", self.mod_name) } else { String::new() },
             d.actors().len(),
             d.rails().len(),
-            self.stages.iter().filter(|s| s.name != TERRAIN).count(),
+            if gridify_count > 0 { format!(", {gridify_count} gridify piece(s)") } else { String::new() },
             if self.stages.iter().any(|s| s.name == TERRAIN) { ", terrain" } else { "" }
         ));
         Ok(())
     }
 
-    /// Models the open course needs: stages first, then object models.
+    /// All world stage placements: vanilla catalog stages plus any added/overridden by the active mod.
+    fn all_world_stages(&self) -> Vec<StagePlacement> {
+        let Some(cat) = &self.cat else { return vec![] };
+        if self.mod_stages.is_empty() {
+            return cat.data.stages.clone();
+        }
+        let mut out = self.mod_stages.clone();
+        let have: HashSet<String> = out.iter().map(|s| s.name.clone()).collect();
+        for s in &cat.data.stages {
+            if !have.contains(&s.name) {
+                out.push(s.clone());
+            }
+        }
+        out
+    }
+
+    /// Recompute the list of background scenery models (terrain, nearby stage models,
+    /// user-pinned distant stage models, and nearby Gridify pieces) for the open course.
+    pub fn rebuild_stages(&mut self) {
+        let (Some(cat), Some(doc)) = (&self.cat, &self.doc) else {
+            self.stages.clear();
+            return;
+        };
+        let all_stages = self.all_world_stages();
+        let (t_margin, s_margin, s_max, g_margin, g_max) = if self.load_distant_world {
+            (TERRAIN_MARGIN_DISTANT, STAGE_MARGIN_DISTANT, 48, GRIDIFY_MARGIN_DISTANT, 160)
+        } else {
+            (TERRAIN_MARGIN, STAGE_MARGIN, 12, GRIDIFY_MARGIN, 64)
+        };
+        let mut stages: Vec<StagePlacement> = stages_for_margin(&all_stages, &doc.root, s_margin, s_max).into_iter().cloned().collect();
+        let mut have: HashSet<String> = stages.iter().map(|s| s.name.clone()).collect();
+        for s in &all_stages {
+            if self.extra_stages.contains(&s.name) && have.insert(s.name.clone()) {
+                stages.push(s.clone());
+            }
+        }
+        if self.show_gridify {
+            for g in gridify_for(cat, &doc.root, g_margin, g_max) {
+                if have.insert(g.name.clone()) {
+                    stages.push(g.clone());
+                }
+            }
+        }
+        // the open world's ground goes first, so it shows while the stage models load
+        let quality = if self.high_quality_terrain { TerrainQuality::High } else { TerrainQuality::Standard };
+        if let Some(region) = terrain::region_around(&scene::course_points(&doc.root), t_margin) {
+            stages.insert(
+                0,
+                StagePlacement {
+                    name: TERRAIN.into(),
+                    source: String::new(),
+                    model: Some(terrain::model_key_with_quality(region, quality)),
+                    aabb: None,
+                    translate: [0.0; 3],
+                    rotate: [0.0; 3],
+                    scale: [1.0; 3],
+                },
+            );
+        }
+        self.stages = stages;
+    }
+
+    /// Models the open course needs: stages (terrain, stage models, gridify) first, then object models.
     pub fn wanted_models(&self) -> Vec<(String, bool)> {
         let (Some(cat), Some(doc)) = (&self.cat, &self.doc) else { return vec![] };
-        let mut out: Vec<(String, bool)> = self.stages.iter().filter_map(|s| s.model.clone()).map(|m| (m, true)).collect();
+        let mut out: Vec<(String, bool)> = self
+            .stages
+            .iter()
+            .filter(|s| {
+                if s.name == TERRAIN {
+                    self.show_terrain
+                } else if s.source == GRIDIFY_SOURCE {
+                    self.show_gridify
+                } else {
+                    self.show_stage || self.extra_stages.contains(&s.name)
+                }
+            })
+            .filter_map(|s| s.model.clone())
+            .map(|m| (m, true))
+            .collect();
         let mut seen: HashSet<String> = out.iter().map(|x| x.0.clone()).collect();
         for a in doc.actors() {
-            if let Some(m) = cat.actor(a.str_or("Gyaml", "")).and_then(|i| i.model.clone())
+            let m = cat
+                .actor(a.str_or("Gyaml", ""))
+                .and_then(|i| i.model.clone())
+                .or_else(|| self.view.custom_models.get(a.str_or("Name", "")).cloned());
+            if let Some(m) = m
                 && seen.insert(m.clone())
             {
                 out.push((m, false));
@@ -289,7 +441,13 @@ impl State {
 
     pub fn stages_json(&self) -> Value {
         json!(self.stages.iter().filter_map(|s| {
-            let shown = if s.name == TERRAIN { self.show_terrain } else { self.show_stage };
+            let shown = if s.name == TERRAIN {
+                self.show_terrain
+            } else if s.source == GRIDIFY_SOURCE {
+                self.show_gridify
+            } else {
+                self.show_stage || self.extra_stages.contains(&s.name)
+            };
             if !shown {
                 return None;
             }
@@ -413,9 +571,22 @@ impl State {
         }
         let Some(doc) = &self.doc else { return false };
         match doc.find(h) {
-            Some((Loc::Actor(_), _)) => f == "objects",
+            Some((Loc::Actor(_), a)) => f == "objects" || (f == "respawns" && scene::is_respawn_actor(a.str_or("Name", ""))),
             Some((Loc::Point(r, _), _)) | Some((Loc::Rail(r), _)) => f == "paths" || doc.rails()[r].str_or("Name", "") == f,
             None => false,
+        }
+    }
+
+    /// Respawn point actor type suited to the currently open course.
+    pub fn default_respawn_actor(&self) -> &'static str {
+        let Some(doc) = &self.doc else { return "SystemObj_PrioRecoverPoint" };
+        let base = course_base(&doc.file);
+        if base.starts_with("BalloonBattle_") || base.starts_with("CoinBattle_") || base.starts_with("BombBattle_") {
+            "SystemObj_BattleRespawnPoint_00"
+        } else if doc.file.contains("/World_Game03") {
+            "SystemObj_RespawnPoint_00"
+        } else {
+            "SystemObj_PrioRecoverPoint"
         }
     }
 
@@ -781,9 +952,11 @@ impl State {
             let key = format!("a:{name}");
             let open = self.expanded.contains(&key);
             let category = info.map(|i| i.category.as_str()).unwrap_or("Other");
+            let col = if scene::is_respawn_actor(name) { scene::RESPAWN_COLOR } else { scene::category_color(category) };
             rows.push(json!({"kind": "group", "key": key, "label": short_name(name), "name": name, "sub": label, "count": list.len(), "expanded": open, "thumb": thumb_url(info), "category": category,
-                "color": scene::hex(scene::category_color(category)), "icon": if info.and_then(|i| i.model.as_ref()).is_some() { "cube" } else { "draw-cuboid" },
-                "selected": list.iter().any(|a| sel.contains(&hash_of(a))), "visible": !self.view.hidden_actor_names.contains(name) && !self.view.hidden_categories.contains(category)}));
+                "color": scene::hex(col), "icon": if info.and_then(|i| i.model.as_ref()).is_some() { "cube" } else { "draw-cuboid" },
+                "selected": list.iter().any(|a| sel.contains(&hash_of(a))), "allSelected": list.iter().all(|a| sel.contains(&hash_of(a))),
+                "visible": !self.view.hidden_actor_names.contains(name) && !self.view.hidden_categories.contains(category)}));
             if open {
                 for (i, a) in list.iter().enumerate() {
                     let h = hash_of(a);
@@ -835,6 +1008,87 @@ impl State {
                     let links = p.get("Links").and_then(|l| l.as_array()).map(|l| l.len()).unwrap_or(0);
                     rows.push(json!({"kind": "item", "key": format!("h:{h}"), "hash": h.to_string(),
                         "label": if links > 0 { format!("#{i}  → {links}") } else { format!("#{i}") }, "sub": dynv.join(" "), "selected": sel.contains(&h)}));
+                }
+            }
+        }
+        // World & Terrain section in the sidebar: quick toggles for terrain quality, Gridify
+        // pieces, surrounding terrain/pieces, and individual distant stage models.
+        let stage_count = self.stages.iter().filter(|s| s.name != TERRAIN && s.source != GRIDIFY_SOURCE).count();
+        let gridify_count = self.stages.iter().filter(|s| s.source == GRIDIFY_SOURCE).count();
+        if f.is_empty()
+            || "terrain".contains(&f)
+            || "gridify".contains(&f)
+            || "world".contains(&f)
+            || "stage".contains(&f)
+            || self.all_world_stages().iter().any(|s| s.name.to_lowercase().contains(&f))
+        {
+            rows.push(json!({"kind": "section", "label": "World & Terrain", "key": "s:world"}));
+            let toggles = [
+                ("opt:terrain", "Terrain", "", self.show_terrain, "Show the open world's heightmap terrain under the course"),
+                (
+                    "opt:terrain_hq",
+                    "High-quality terrain",
+                    "",
+                    self.high_quality_terrain,
+                    "Load full-resolution terrain mesh (0.5 m) and 2048 px ground colour map",
+                ),
+                (
+                    "opt:gridify",
+                    "Nearby Gridify pieces",
+                    &if gridify_count > 0 { format!("{gridify_count}") } else { String::new() },
+                    self.show_gridify,
+                    "Load nearby open-world scenery models (bridges, castle walls, cliffs)",
+                ),
+                (
+                    "opt:distant",
+                    "Surrounding terrain & pieces",
+                    "",
+                    self.load_distant_world,
+                    "Also load terrain, Gridify pieces and stage models not directly nearby",
+                ),
+            ];
+            for (key, label, sub, checked, tip) in toggles {
+                if f.is_empty() || label.to_lowercase().contains(&f) || "world".contains(&f) {
+                    rows.push(json!({"kind": "toggle", "key": key, "label": label, "sub": sub, "checked": checked, "tip": tip}));
+                }
+            }
+            // Other world stage models sorted by distance from the course, toggleable individually
+            let pts = scene::course_points(&doc.root);
+            let centre = if pts.is_empty() { Vec3::ZERO } else { pts.iter().map(|p| Vec3::from(*p)).sum::<Vec3>() / pts.len() as f32 };
+            let auto_loaded: HashSet<&str> = self
+                .stages
+                .iter()
+                .filter(|s| s.name != TERRAIN && s.source != GRIDIFY_SOURCE && !self.extra_stages.contains(&s.name))
+                .map(|s| s.name.as_str())
+                .collect();
+            let mut others: Vec<(f32, StagePlacement)> = self
+                .all_world_stages()
+                .into_iter()
+                .filter(|s| s.model.is_some() && !auto_loaded.contains(s.name.as_str()))
+                .filter(|s| f.is_empty() || s.name.to_lowercase().contains(&f) || "stage".contains(&f) || "world".contains(&f))
+                .map(|s| (Vec3::from(s.translate).distance(centre), s))
+                .collect();
+            others.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.name.cmp(&b.1.name)));
+            if !others.is_empty() {
+                let wkey = "w:stages";
+                let open = self.expanded.contains(wkey) || !f.is_empty();
+                let loaded_extra = others.iter().filter(|(_, s)| self.extra_stages.contains(&s.name)).count();
+                rows.push(json!({
+                    "kind": "worldgroup", "key": wkey, "label": "Other stage pieces",
+                    "sub": if loaded_extra > 0 { format!("{loaded_extra} loaded · {stage_count} nearby") } else { format!("{stage_count} nearby") },
+                    "count": others.len(), "expanded": open
+                }));
+                if open {
+                    for (dist, s) in others {
+                        let dtxt = if dist >= 1000.0 { format!("{:.1} km", dist / 1000.0) } else { format!("{:.0} m", dist) };
+                        let checked = self.extra_stages.contains(&s.name);
+                        rows.push(json!({
+                            "kind": "stage", "key": format!("st:{}", s.name), "name": s.name,
+                            "label": s.name.strip_prefix("Stage_").unwrap_or(&s.name),
+                            "sub": dtxt, "checked": checked,
+                            "tip": format!("{} ({dtxt} from course)", s.name)
+                        }));
+                    }
                 }
             }
         }
@@ -1036,17 +1290,38 @@ impl State {
                 _ => json!([]),
             };
             let rails = doc.rail_targets(&self.selection).len();
-            // selected lap points, and how many of them are checkpoints
-            let (mut lap_points, mut checkpoints) = (0, 0);
+            // selected lap points, route points and respawn actors
+            let (mut lap_points, mut checkpoints, mut jugem_left) = (0, 0, 0);
+            let (mut route_points, mut recover_dash, mut respawn_actors) = (0, 0, 0);
+            let mut recover_types: BTreeSet<i64> = BTreeSet::new();
             for h in &self.selection {
-                if let Some((Loc::Point(r, _), p)) = doc.find(*h)
-                    && doc.rails()[r].str_or("Name", "") == mkwtrack::checkpoints::LAP
-                {
-                    lap_points += 1;
-                    checkpoints += mkwtrack::checkpoints::is_checkpoint(p) as usize;
+                match doc.find(*h) {
+                    Some((Loc::Point(r, _), p)) => {
+                        let rn = doc.rails()[r].str_or("Name", "");
+                        if rn == mkwtrack::checkpoints::LAP {
+                            lap_points += 1;
+                            checkpoints += mkwtrack::checkpoints::is_checkpoint(p) as usize;
+                            jugem_left +=
+                                (p.get("Dynamic").and_then(|d| d.get("IsJugemLeft")).and_then(|b| b.as_bool()) == Some(true)) as usize;
+                        } else if rn == "RoutePathGraph" {
+                            route_points += 1;
+                            let rt =
+                                p.get("Dynamic").and_then(|d| d.get("RecoverType")).and_then(|v| v.as_f64()).map(|x| x as i64).unwrap_or(0);
+                            recover_types.insert(rt);
+                            recover_dash +=
+                                (p.get("Dynamic").and_then(|d| d.get("IsRecoverDash")).and_then(|b| b.as_bool()) == Some(true)) as usize;
+                        }
+                    }
+                    Some((Loc::Actor(_), a)) if scene::is_respawn_actor(a.str_or("Name", "")) => {
+                        respawn_actors += 1;
+                    }
+                    _ => {}
                 }
             }
-            return json!({"kind": "multi", "lapPoints": lap_points, "checkpoints": checkpoints, "count": self.selection.len(), "objects": objects, "points": points, "paths": paths, "rails": rails,
+            let shared_recover: Option<i64> = (recover_types.len() == 1).then(|| *recover_types.iter().next().unwrap());
+            return json!({"kind": "multi", "lapPoints": lap_points, "checkpoints": checkpoints, "jugemLeft": jugem_left,
+                "routePoints": route_points, "recoverType": shared_recover, "recoverDash": recover_dash, "respawnActors": respawn_actors,
+                "count": self.selection.len(), "objects": objects, "points": points, "paths": paths, "rails": rails,
                 "types": types.iter().take(6).map(|(n, c)| json!({"name": n, "count": c})).collect::<Vec<_>>(), "moreTypes": types.len().saturating_sub(6),
                 "centre": v3(centre), "size": v3(size), "distance": distance, "positioned": pos.len(),
                 "paramTable": if shared { table } else { None }, "params": params});
@@ -1055,10 +1330,14 @@ impl State {
         let Some((loc, e)) = doc.find(h) else { return json!({"kind": "none"}) };
         match loc {
             Loc::Actor(_) => {
+                let name = e.str_or("Name", "");
                 let info = cat.actor(e.str_or("Gyaml", ""));
-                json!({"kind": "actor", "hash": h.to_string(), "name": e.str_or("Name", ""), "label": info.map(|i| i.label.clone()), "thumb": thumb_url(info),
+                let has_model = info.and_then(|i| i.model.as_ref()).is_some() || self.view.custom_models.contains_key(name);
+                let is_respawn = scene::is_respawn_actor(name);
+                let is_glide = e.get("Dynamic").and_then(|d| d.get("IsGlide")).and_then(|b| b.as_bool()).unwrap_or(false);
+                json!({"kind": "actor", "hash": h.to_string(), "name": name, "label": info.map(|i| i.label.clone()), "thumb": thumb_url(info),
                     "category": info.map(|i| i.category.clone()), "collect": info.and_then(|i| i.collect.clone()), "gyaml": e.str_or("Gyaml", ""),
-                    "hasModel": info.and_then(|i| i.model.as_ref()).is_some(), "instanceId": e.str_or("InstanceId", ""),
+                    "hasModel": has_model, "isRespawn": is_respawn, "isGlide": is_glide, "instanceId": e.str_or("InstanceId", ""),
                     "translate": e.vec3("Translate", [0.0; 3]), "rotate": deg(e.vec3("Rotate", [0.0; 3])), "scale": e.vec3("Scale", [1.0; 3]),
                     "paramTable": info.map(|i| i.banc_param.clone()), "params": self.params_json(e, info.map(|i| i.banc_param.as_str()).unwrap_or("")),
                     "links": self.links_json(e), "raw": Self::raw_json(e, &Self::ACTOR_KEEP)})
@@ -1087,6 +1366,7 @@ impl State {
                     e.get(k).and_then(|v| v.as_array()).map(|a| json!(a.iter().map(|x| x.as_f64().unwrap_or(0.0)).collect::<Vec<_>>()))
                 };
                 let lap = name == mkwtrack::checkpoints::LAP;
+                let route = name == "RoutePathGraph";
                 let checkpoint = (lap && mkwtrack::checkpoints::is_checkpoint(e))
                     .then(|| e.get("Dynamic").and_then(|d| d.get(mkwtrack::checkpoints::KEY)).and_then(|v| v.as_f64()).unwrap_or(0.0));
                 let marker = mkwtrack::checkpoints::MARKERS
@@ -1097,7 +1377,13 @@ impl State {
                         "IsLapCheck" => "lap check",
                         _ => "goal",
                     });
-                json!({"kind": "point", "hash": h.to_string(), "rail": name, "lap": lap, "checkpoint": checkpoint, "lapMarker": marker, "railHash": hash_of(rail).to_string(), "index": i, "count": Document::points(rail).len(),
+                let jugem_left = lap && e.get("Dynamic").and_then(|d| d.get("IsJugemLeft")).and_then(|b| b.as_bool()) == Some(true);
+                let recover_type =
+                    e.get("Dynamic").and_then(|d| d.get("RecoverType")).and_then(|v| v.as_f64()).map(|x| x as i64).unwrap_or(0);
+                let recover_dash = route && e.get("Dynamic").and_then(|d| d.get("IsRecoverDash")).and_then(|b| b.as_bool()) == Some(true);
+                json!({"kind": "point", "hash": h.to_string(), "rail": name, "lap": lap, "route": route, "checkpoint": checkpoint, "lapMarker": marker,
+                    "jugemLeft": jugem_left, "recoverType": recover_type, "recoverDash": recover_dash,
+                    "railHash": hash_of(rail).to_string(), "index": i, "count": Document::points(rail).len(),
                     "closed": rail.get("IsClosed").and_then(|b| b.as_bool()).unwrap_or(false), "handle": self.handle.map(|x| x.1),
                     "translate": e.vec3("Translation", [0.0; 3]), "rotate": deg(e.vec3("Rotate", [0.0; 3])),
                     "rectSize": two("RectSize"), "rectOffset": two("RectOffset"), "control0": opt("Control0"), "control1": opt("Control1"),
@@ -1193,7 +1479,9 @@ impl State {
         cats.sort();
         json!({"rails": rails.iter().map(|r| json!({"name": r, "visible": !self.view.hidden_rail_types.contains(*r), "color": scene::hex(scene::rail_color(r))})).collect::<Vec<_>>(),
                "categories": cats.iter().map(|c| json!({"name": c, "visible": !self.view.hidden_categories.contains(c), "color": scene::hex(scene::category_color(c))})).collect::<Vec<_>>(),
-               "stage": self.show_stage, "terrain": self.show_terrain, "models": self.view.models, "xray": self.xray, "widths": self.view.widths, "snap": self.snap_ground,
+               "stage": self.show_stage, "terrain": self.show_terrain, "terrainHq": self.high_quality_terrain, "gridify": self.show_gridify,
+               "distantWorld": self.load_distant_world, "respawns": self.view.show_respawns,
+               "models": self.view.models, "xray": self.xray, "widths": self.view.widths, "snap": self.snap_ground,
                "pickFilter": self.pick_filter, "snapStep": self.snap.step, "snapAngle": self.snap.angle,
                "hidden": self.view.hidden_items.len() + self.view.hidden_rails.len() + self.view.hidden_actor_names.len() + self.view.hidden_rail_types.len() + self.view.hidden_categories.len()})
     }

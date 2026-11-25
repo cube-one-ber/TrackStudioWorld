@@ -42,6 +42,7 @@ FocusScope {
     property int railCount: 0
     property var linksData: ({})
     property var selectionData: ({})
+    property var respawnData: ({})
     property var gizmoInfo: ({ visible: false })
     property var viewInfo: ({ rails: [], categories: [] })
     property var keys: ({})
@@ -84,6 +85,7 @@ FocusScope {
     function refreshOverlay() {
         linksData = editor.linksMesh();
         selectionData = editor.selectionMesh();
+        respawnData = editor.respawnMesh();
         gizmoInfo = JSON.parse(editor.gizmo());
     }
 
@@ -234,6 +236,11 @@ FocusScope {
         editor.addActor(name, r.o, r.d, heading());
         vp.forceActiveFocus();
     }
+    function addRespawnAtCenter() {
+        const r = centerRay();
+        editor.addRespawnPoint(r.o, r.d, heading());
+        vp.forceActiveFocus();
+    }
     function newPath(name, shape) {
         const r = centerRay();
         editor.newRail(name, shape || "line", r.o, r.d, heading());
@@ -248,11 +255,15 @@ FocusScope {
         editor.paste(r.o, r.d, inPlace);
         vp.forceActiveFocus();
     }
-    // Alt+Click: a path point after the selected one, a new path in a path editor, or the
-    // current object
+    // Alt+Click: a path point after the selected one, a respawn point in Respawn Points mode,
+    // a new path in a path editor, or the current object
     function altClick(x, y) {
         const r = rayAt(x, y);
         const filter = vp.editor.pickFilter;
+        if (filter === "respawns") {
+            vp.editor.addRespawnPoint(r.o, r.d, heading());
+            return;
+        }
         if (vp.selection.kind === "point" && vp.editor.addPointAt(r.o, r.d))
             return;
         if (filter.length > 0 && filter !== "objects" && filter !== "paths") {
@@ -660,6 +671,7 @@ FocusScope {
                     count: vp.xray ? vp.railCount : 0
                 }
                 LineModel { lines: vp.linksData }
+                LineModel { lines: vp.respawnData }
                 LineModel { lines: vp.selectionData }
                 Gizmo {
                     id: gizmo
@@ -703,9 +715,9 @@ FocusScope {
                               .concat([0.25, 0.5, 1, 2, 4].map(s => ({ text: "Speed ×" + s, on: vp.speedScale === s, id: "speed:" + s }))) },
                         { key: "Shading", value: ({ lit: "Lit", unlit: "Unlit", normals: "Normals", wireframe: "Wireframe" })[vp.shading], tip: "How the stage and models are drawn",
                           options: [["lit", "Lit"], ["unlit", "Unlit (texture colour)"], ["normals", "Normals"], ["wireframe", "Wireframe"]].map(o => ({ text: o[1], on: vp.shading === o[0], id: o[0] })) },
-                        { key: "Editor", value: vp.editor.linkPicking ? "Pick link target" : vp.editor.pickFilter === "" ? "All" : vp.editor.pickFilter === "objects" ? "Map Objects" : vp.editor.pickFilter === "paths" ? "Paths" : vp.editor.pickFilter, alert: vp.editor.linkPicking,
-                          tip: "What clicks and box selection pick (Track Studio's editor list). In a path editor, Alt+Click draws that path type.",
-                          options: [{ text: "All", on: vp.editor.pickFilter === "", id: "" }, { text: "Map Objects", on: vp.editor.pickFilter === "objects", id: "objects" }, { text: "Paths", on: vp.editor.pickFilter === "paths", id: "paths" }]
+                        { key: "Editor", value: vp.editor.linkPicking ? "Pick link target" : vp.editor.pickFilter === "" ? "All" : vp.editor.pickFilter === "objects" ? "Map Objects" : vp.editor.pickFilter === "paths" ? "Paths" : vp.editor.pickFilter === "respawns" ? "Respawn Points" : vp.editor.pickFilter, alert: vp.editor.linkPicking,
+                          tip: "What clicks and box selection pick (Track Studio's editor list). In Respawn Points mode, Alt+Click places a respawn point. In a path editor, Alt+Click draws that path type.",
+                          options: [{ text: "All", on: vp.editor.pickFilter === "", id: "" }, { text: "Map Objects", on: vp.editor.pickFilter === "objects", id: "objects" }, { text: "Respawn Points", on: vp.editor.pickFilter === "respawns", id: "respawns" }, { text: "Paths", on: vp.editor.pickFilter === "paths", id: "paths" }]
                               .concat((vp.viewInfo.rails || []).map(r => ({ text: r.name, on: vp.editor.pickFilter === r.name, id: r.name }))) },
                         { key: "Gizmo", value: vp.editor.gizmoLocal ? "Local" : "World", tip: "Gizmo axes follow the object (Local) or the world (World)",
                           options: [{ text: "Local", on: vp.editor.gizmoLocal, id: "local" }, { text: "World", on: !vp.editor.gizmoLocal, id: "world" }] },
@@ -1037,6 +1049,16 @@ FocusScope {
                         vp.editor.addActor(vp.currentAsset, r.o, r.d, vp.heading());
                     }
                 }
+                QQC2.MenuItem {
+                    text: "Add Respawn Point Here"
+                    icon.name: "mark-location"
+                    enabled: vp.hasCourse
+                    onTriggered: {
+                        const r = vp.menuRay || vp.centerRay();
+                        vp.editor.addRespawnPoint(r.o, r.d, vp.heading());
+                    }
+                }
+                QQC2.MenuItem { action: vp.actions.orientToPath || null; visible: contextMenu.kind === "actor" || (contextMenu.kind === "multi" && (vp.selection.objects || 0) > 0); height: visible ? implicitHeight : 0 }
                 QQC2.MenuItem { action: vp.actions.drop || null }
                 QQC2.MenuItem { action: vp.actions.hide || null }
                 QQC2.MenuItem { action: vp.actions.unhide || null }

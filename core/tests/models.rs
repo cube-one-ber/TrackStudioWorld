@@ -134,3 +134,44 @@ fn open_world_objects_sit_on_the_terrain() {
     // objects on stage models, bridges or in the air make up the rest
     assert!(on * 4 > total, "{on} of {total}");
 }
+
+#[test]
+fn gridify_pieces_support_routes() {
+    use mkwtrack::{byml, catalog::parse_gridify_cell, raycast::Bvh};
+    let Some(romfs) = common::romfs() else { return };
+    for (course, min_hits) in [
+        ("Banc/InterStageEx1_AirshipFortressToLava_A_00.bcett.byml.zs", 150),
+        ("Banc/InterStageEx2_CinemaToDinoBones_A_00.bcett.byml.zs", 350),
+    ] {
+        let (doc, _) = byml::from_bytes(&mkwtrack::io::read_file(&romfs.join(course)).unwrap()).unwrap();
+        let pts: Vec<glam::Vec3> = doc
+            .array("Rails")
+            .iter()
+            .filter(|r| r.str_or("Name", "") == "RoutePathGraph")
+            .flat_map(|r| r.array("Points"))
+            .map(|p| glam::Vec3::from(p.vec3("Translation", [0.0; 3])))
+            .collect();
+        let files: Vec<String> = mkwtrack::io::files_under(&romfs.join("Model"))
+            .into_iter()
+            .filter(|f| f.starts_with("Piece_Gridify_Game03_") && f.contains(".Gridify_Game03_") && f.ends_with(".bfres.zs"))
+            .collect();
+        let mut tris = vec![];
+        for f in &files {
+            let Some(stem) = f.split('.').nth(1) else { continue };
+            let Some(t) = parse_gridify_cell(stem) else { continue };
+            if !pts.iter().any(|p| (p.x - t[0]).abs() < 300.0 && (p.z - t[2]).abs() < 300.0) {
+                continue;
+            }
+            let m = bfres::load(&romfs, &format!("Model/{f}")).unwrap();
+            let off = glam::Vec3::from(t);
+            for part in &m.parts {
+                for tri in part.indices.as_chunks::<3>().0 {
+                    tris.push([0, 1, 2].map(|k| glam::Vec3::from(part.positions[tri[k] as usize]) + off));
+                }
+            }
+        }
+        let bvh = Bvh::new(tris);
+        let hits = pts.iter().filter(|p| bvh.ground_below(**p + glam::Vec3::Y * 2.0).is_some_and(|y| (y - p.y).abs() < 2.0)).count();
+        assert!(hits >= min_hits, "{course}: expected >= {min_hits} route points on gridify pieces, got {hits}");
+    }
+}
